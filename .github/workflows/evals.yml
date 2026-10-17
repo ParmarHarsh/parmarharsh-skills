@@ -67,13 +67,26 @@ jobs:
           echo "skills=$(echo $skills)" >> "$GITHUB_OUTPUT"
           echo "Evaluating: ${skills:-none} (base: ${base:-none})"
 
+      - name: Check the credential before spending on evals
+        if: steps.pick.outputs.skills != ''
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          # Claude Code treats a blank token as no token, so a bad paste shows up later as "Not logged in"
+          if [ -z "$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | tr -d '[:space:]')" ]; then
+            echo "::error::repository secret CLAUDE_CODE_OAUTH_TOKEN is missing or blank"; exit 1
+          fi
+          if ! claude -p "Reply with the single word OK." --max-turns 1 --model "$JUDGE_MODEL" > auth-check.txt 2>&1; then
+            echo "::error::Claude Code could not authenticate with CLAUDE_CODE_OAUTH_TOKEN: $(head -1 auth-check.txt)"; exit 1
+          fi
+          echo "credential ok"
+
       - name: Run each skill's suite, then the collision suite
         if: steps.pick.outputs.skills != ''
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           SKILLS: ${{ steps.pick.outputs.skills }}
         run: |
-          [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || { echo "::error::repository secret CLAUDE_CODE_OAUTH_TOKEN is not set"; exit 1; }
           mkdir -p eval-out; rc=0
           common=(--trust-plugin --no-publish --model "$EVAL_MODEL" --judge-model "$JUDGE_MODEL" --threshold "$THRESHOLD" --max-cost-usd "$MAX_COST_USD")
           for s in $SKILLS; do
