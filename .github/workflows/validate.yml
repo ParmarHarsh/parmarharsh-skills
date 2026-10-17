@@ -1,0 +1,79 @@
+name: validate
+
+# Runs on every push and pull request. Needs no secrets and never calls a model.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CLAUDE_CODE_VERSION: 2.1.301
+  # skills-ref from the Agent Skills spec repo, pinned (PyPI's skills-ref ships a different CLI name)
+  SKILLS_REF: git+https://github.com/agentskills/agentskills@69ef37e9424c0a7ea9dd2293b559e43ec8176379#subdirectory=skills-ref
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install validators
+        run: |
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          pip install "${SKILLS_REF}"
+
+      - name: claude plugin validate (strict)
+        run: |
+          claude plugin validate --strict .
+          for p in plugins/*/; do claude plugin validate --strict "$p"; done
+
+      - name: skills-ref validate
+        run: for s in plugins/*/skills/*/; do skills-ref validate "$s"; done
+
+      - name: Eval fixtures are exact copies of fixtures/notes-app
+        run: |
+          rc=0
+          for d in plugins/*/evals/*/project; do
+            diff -r --exclude=docs fixtures/notes-app "$d" || { echo "::error::$d differs from fixtures/notes-app"; rc=1; }
+          done
+          exit $rc
+
+      - name: Collision suite covers every case with the same prompt
+        run: |
+          body() { awk 'f>=2 {print} /^---$/ {f++}' "$1"; }
+          rc=0
+          for src in plugins/*/evals/*/prompt.md; do
+            skill=$(echo "$src" | cut -d/ -f2); case=$(basename "$(dirname "$src")")
+            copy="evals/${skill}--${case}/prompt.md"
+            if [ ! -f "$copy" ]; then echo "::error::missing collision case $copy"; rc=1; continue; fi
+            diff <(body "$src") <(body "$copy") >/dev/null || { echo "::error::$copy prompt differs from $src"; rc=1; }
+          done
+          exit $rc
+
+      - name: Summarize changes to allowed-tools, hooks, scripts and ! injection
+        env:
+          BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BEFORE"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git hash-object -t tree /dev/null)   # first push: compare with the empty tree
+          fi
+          added_removed() { git diff -U0 "$base" HEAD -- "$@" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' || true; }
+          section() { echo "### $1"; if [ -n "$2" ]; then echo '```'; echo "$2"; echo '```'; else echo "none"; fi; echo; }
+          {
+            echo "## Sensitive changes since ${base:0:12}"
+            section "allowed-tools" "$(added_removed '*.md' | grep -E 'allowed-tools' || true)"
+            section "hooks" "$(git diff --name-status "$base" HEAD | grep -E '(^|/)hooks(/|\.json)' || true; added_removed '*.md' '*.json' | grep -E '"hooks"|^[+-]hooks:' || true)"
+            section "scripts and workflows" "$(git diff --name-status "$base" HEAD | grep -E '(^|[[:space:]])(bin|scripts|\.github/workflows)/|/scripts/|\.sh$' || true)"
+            section "! shell injection in skill text" "$(added_removed 'plugins/*.md' | grep -F '!`' || true)"
+          } >> "$GITHUB_STEP_SUMMARY"

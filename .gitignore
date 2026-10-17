@@ -1,0 +1,5 @@
+# Private working notes about my other repos. Never commit.
+.notes/
+
+# Local eval output (any plugin)
+**/evals/results/

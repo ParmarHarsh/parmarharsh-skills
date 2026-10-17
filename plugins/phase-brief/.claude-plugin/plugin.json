@@ -1,0 +1,8 @@
+{
+  "name": "phase-brief",
+  "version": "1.0.0",
+  "description": "Write the brief another session executes for one phase of work, and grade its result.",
+  "author": { "name": "Harsh Parmar", "url": "https://github.com/ParmarHarsh" },
+  "license": "MIT",
+  "repository": "https://github.com/ParmarHarsh/parmarharsh-skills"
+}

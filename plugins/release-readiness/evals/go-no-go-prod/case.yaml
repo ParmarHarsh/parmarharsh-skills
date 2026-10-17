@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: go-no-go-prod
+context:
+  scaffold_script: fixture.sh

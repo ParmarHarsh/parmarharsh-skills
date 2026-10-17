@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# skills-sync: vendor skills from the parmarharsh-skills library into this repo's .claude/skills/.
+#
+# Run from anywhere inside a consumer repository:
+#   skills-sync sync [--ref REF] [--lib URL] [--force] [SKILL...]
+#       Copy plugins/<SKILL>/skills/<SKILL>/ from the library at REF into .claude/skills/<SKILL>/
+#       and record it in .claude/skills.lock. With no SKILL, re-syncs every skill in the lock.
+#       REF defaults to the lock's ref, else "stable". Refuses to overwrite a hand-edited copy
+#       unless --force.
+#   skills-sync check
+#       Exit 1 if any vendored skill differs from the lock (committed or uncommitted).
+#   skills-sync remove SKILL...
+#       Delete the vendored copy and its lock line.
+#
+# Lock line: <skill> <tree> <commit> <ref> <url>
+# <tree> is git's own hash of the skill folder at <commit>, so the check is exact:
+# `git rev-parse HEAD:.claude/skills/<skill>` must equal it.
+set -euo pipefail
+
+DEFAULT_LIB=https://github.com/ParmarHarsh/parmarharsh-skills.git
+LOCK=.claude/skills.lock
+
+die() { echo "skills-sync: $*" >&2; exit 2; }
+cd "$(git rev-parse --show-toplevel 2>/dev/null)" || die "run inside a git repository"
+
+lock_field() { # lock_field <skill> <column 2..5>
+  [ -f "$LOCK" ] && awk -v s="$1" -v c="$2" '$1==s {print $c}' "$LOCK" || true
+}
+lock_skills() { [ -f "$LOCK" ] && awk '!/^#/ && NF {print $1}' "$LOCK" || true; }
+
+drifted() { # drifted <skill>: prints a reason when the copy no longer matches the lock
+  local s=$1 want have
+  want=$(lock_field "$s" 2)
+  [ -n "$want" ] || return 0
+  have=$(git rev-parse -q --verify "HEAD:.claude/skills/$s" 2>/dev/null || echo missing)
+  [ "$have" = "$want" ] || echo "committed copy differs from lock ($have != $want)"
+  [ -z "$(git status --porcelain -- ".claude/skills/$s")" ] || echo "uncommitted changes"
+}
+
+write_lock() { # rewrite the lock from "skill tree commit ref url" lines on stdin, sorted by skill
+  { echo "# Managed by skills-sync. Do not edit by hand; run skills-sync instead."
+    sort -k1,1; } > "$LOCK.tmp"
+  mv "$LOCK.tmp" "$LOCK"
+}
+
+cmd_check() {
+  local rc=0 s why
+  [ -f "$LOCK" ] || { echo "no $LOCK"; return 0; }
+  for s in $(lock_skills); do
+    why=$(drifted "$s")
+    if [ -n "$why" ]; then echo "DRIFT .claude/skills/$s: $why"; rc=1; fi
+  done
+  [ $rc = 0 ] && echo "ok: every vendored skill matches $LOCK"
+  return $rc
+}
+
+cmd_sync() {
+  local ref="" lib="" force=0 skills=() s
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ref) ref=${2:?}; shift 2;;
+      --lib) lib=${2:?}; shift 2;;
+      --force) force=1; shift;;
+      -*) die "unknown option $1";;
+      *) skills+=("$1"); shift;;
+    esac
+  done
+  [ ${#skills[@]} -gt 0 ] || skills=($(lock_skills))
+  [ ${#skills[@]} -gt 0 ] || die "name at least one skill"
+  lib=${lib:-$(lock_field "${skills[0]}" 5)}; lib=${lib:-$DEFAULT_LIB}
+  ref=${ref:-$(lock_field "${skills[0]}" 4)}; ref=${ref:-stable}
+
+  if [ $force = 0 ]; then
+    for s in "${skills[@]}"; do
+      [ -z "$(drifted "$s")" ] || die ".claude/skills/$s was edited by hand ($(drifted "$s" | head -1)); commit or revert it, or pass --force"
+    done
+  fi
+
+  TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+  local tmp=$TMP
+  git -C "$tmp" init -q
+  git -C "$tmp" fetch -q --depth 1 "$lib" "$ref" || die "cannot fetch $ref from $lib"
+  local commit; commit=$(git -C "$tmp" rev-parse FETCH_HEAD)
+
+  mkdir -p .claude/skills
+  local lines; lines=$( [ -f "$LOCK" ] && awk '!/^#/ && NF' "$LOCK" || true )
+  for s in "${skills[@]}"; do
+    local src="plugins/$s/skills/$s" tree
+    tree=$(git -C "$tmp" rev-parse -q --verify "FETCH_HEAD:$src" 2>/dev/null) || die "no skill '$s' at $ref"
+    rm -rf ".claude/skills/$s"
+    mkdir -p ".claude/skills/$s"
+    git -C "$tmp" archive FETCH_HEAD "$src" | tar -x -C ".claude/skills/$s" --strip-components=4
+    lines=$(printf '%s\n' "$lines" | awk -v s="$s" '$1!=s'; echo "$s $tree $commit $ref $lib")
+  done
+  printf '%s\n' "$lines" | awk 'NF' | write_lock
+  echo "synced ${#skills[@]} skill(s) from $ref at ${commit:0:12}; review with git diff, then commit"
+}
+
+cmd_remove() {
+  [ $# -gt 0 ] || die "name a skill"
+  local s
+  for s in "$@"; do
+    rm -rf ".claude/skills/$s"
+    [ -f "$LOCK" ] && awk -v s="$s" '!/^#/ && NF && $1!=s' "$LOCK" | write_lock
+    echo "removed $s"
+  done
+}
+
+case "${1:-}" in
+  sync) shift; cmd_sync "$@";;
+  check) shift; cmd_check;;
+  remove) shift; cmd_remove "$@";;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2;;
+esac

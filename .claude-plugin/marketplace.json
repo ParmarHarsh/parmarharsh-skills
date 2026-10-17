@@ -1,0 +1,22 @@
+{
+  "name": "parmarharsh-skills",
+  "owner": {
+    "name": "Harsh Parmar",
+    "url": "https://github.com/ParmarHarsh"
+  },
+  "metadata": {
+    "description": "Personal Claude Code skills, one plugin per skill. Consumer repos vendor plain copies with bin/skills-sync."
+  },
+  "plugins": [
+    {
+      "name": "phase-brief",
+      "source": "./plugins/phase-brief",
+      "description": "Write the brief another session executes for one phase of work, and grade its result."
+    },
+    {
+      "name": "release-readiness",
+      "source": "./plugins/release-readiness",
+      "description": "Go/no-go readiness check before shipping a build to an environment."
+    }
+  ]
+}
