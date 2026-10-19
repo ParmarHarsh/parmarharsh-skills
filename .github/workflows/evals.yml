@@ -9,12 +9,15 @@ on:
   workflow_dispatch:
     inputs:
       skills:
-        description: Skills to evaluate, space-separated, or "changed" for the ones changed since stable
+        description: Skills to evaluate, space-separated; "changed" (since stable) or "all"
         default: changed
       promote:
-        description: If every evaluated skill passes, fast-forward stable to this commit and tag the releases
+        description: If every evaluated skill passes, fast-forward stable to this commit and tag new versions
         type: boolean
         default: false
+      claude_code_version:
+        description: Candidate Claude Code version to test instead of .github/claude-code-version (no promote)
+        default: ""
 
 permissions:
   contents: read
@@ -24,18 +27,20 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CLAUDE_CODE_VERSION: 2.1.301
   EVAL_MODEL: claude-sonnet-5-5
   JUDGE_MODEL: claude-haiku-5-5
   THRESHOLD: "0.8"
+  MIN_DELTA: "0.3"
   MAX_COST_USD: "10"
-  MIN_DELTA: "0.1"
 
 jobs:
   evals:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read   # list earlier evals runs and download their results (reuse step)
     outputs:
       skills: ${{ steps.pick.outputs.skills }}
     steps:
@@ -46,7 +51,11 @@ jobs:
         with:
           node-version: 22
       - name: Install Claude Code
-        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+        env:
+          CANDIDATE: ${{ inputs.claude_code_version }}
+        run: |
+          v=${CANDIDATE:-$(cat .github/claude-code-version)}
+          npm install -g "@anthropic-ai/claude-code@$v" && echo "Claude Code $(claude --version)"
 
       - name: Pick skills to evaluate
         id: pick
@@ -58,7 +67,8 @@ jobs:
           elif git rev-parse -q --verify origin/stable >/dev/null; then base=origin/stable
           else base=""; fi
           all=$(ls plugins | tr '\n' ' ')
-          if [ -n "$INPUT_SKILLS" ] && [ "$INPUT_SKILLS" != changed ]; then skills=$INPUT_SKILLS
+          if [ "$INPUT_SKILLS" = all ]; then skills=$all
+          elif [ -n "$INPUT_SKILLS" ] && [ "$INPUT_SKILLS" != changed ]; then skills=$INPUT_SKILLS
           elif [ -z "$base" ]; then skills=$all
           elif git diff --name-only "$base"...HEAD -- fixtures evals | grep -q .; then skills=$all   # shared fixture or collision suite changed
           else skills=$(git diff --name-only "$base"...HEAD -- plugins | cut -d/ -f2 | sort -u | tr '\n' ' ')
@@ -67,8 +77,35 @@ jobs:
           echo "skills=$(echo $skills)" >> "$GITHUB_OUTPUT"
           echo "Evaluating: ${skills:-none} (base: ${base:-none})"
 
+      # Promote would otherwise pay for the same evals twice. Reuse a passing pull-request run
+      # when it tested byte-identical skills, cases, fixtures, CLI version and eval settings,
+      # and its results include every skill this promote releases.
+      - name: Reuse a passing pull-request run of the same files
+        id: reuse
+        if: github.event_name == 'workflow_dispatch' && inputs.promote && inputs.claude_code_version == '' && steps.pick.outputs.skills != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SKILLS: ${{ steps.pick.outputs.skills }}
+        run: |
+          fp() { for p in plugins evals fixtures .github/claude-code-version .github/workflows/evals.yml; do git rev-parse -q --verify "$1:$p" || echo none; done | tr '\n' ' '; }
+          want=$(fp HEAD)
+          for line in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/evals.yml/runs?event=pull_request&status=success&per_page=30" --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); do
+            id=${line%%:*} sha=${line#*:}
+            git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch -q origin "$sha" 2>/dev/null || continue
+            [ "$(fp "$sha")" = "$want" ] || continue
+            rm -rf prev && gh run download "$id" -R "$GITHUB_REPOSITORY" -n eval-results -D prev >/dev/null 2>&1 || continue
+            ok=1; for s in $SKILLS collision; do [ -f "prev/$s.json" ] || ok=0; done
+            if [ $ok = 1 ]; then
+              mkdir -p eval-out && cp prev/*.json prev/*.html eval-out/ 2>/dev/null || true
+              echo "run=$id" >> "$GITHUB_OUTPUT"
+              echo "Reusing pull-request evals run $id (head $sha): same files, covers: $SKILLS"
+              exit 0
+            fi
+          done
+          echo "No passing pull-request run of these exact files covers $SKILLS; running the evals."
+
       - name: Check the credential before spending on evals
-        if: steps.pick.outputs.skills != ''
+        if: steps.pick.outputs.skills != '' && steps.reuse.outputs.run == ''
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
@@ -82,7 +119,7 @@ jobs:
           echo "credential ok"
 
       - name: Run each skill's suite, then the collision suite
-        if: steps.pick.outputs.skills != ''
+        if: steps.pick.outputs.skills != '' && steps.reuse.outputs.run == ''
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           SKILLS: ${{ steps.pick.outputs.skills }}
@@ -97,11 +134,27 @@ jobs:
           claude plugin eval . --case '*--*' --ablation none --runs 1 "${common[@]}" --json eval-out/collision.json --report eval-out/collision.html || rc=1
           exit $rc
 
-      - name: Summarize
+      - name: Each skill beats the no-plugin baseline by MIN_DELTA
         if: always() && steps.pick.outputs.skills != ''
         run: |
+          rc=0
+          for f in eval-out/*.json; do
+            n=$(basename "$f" .json); [ "$n" = collision ] && continue
+            d=$(jq '[.cases[] | select(.name | test("nomatch-") | not) | .aggregates.delta // empty] | if length > 0 then add / length else "none" end' "$f")
+            if [ "$d" = '"none"' ]; then echo "::error::$n: no baseline delta (did the baseline arm run?)"; rc=1
+            elif awk -v d="$d" -v m="$MIN_DELTA" 'BEGIN { exit !(d < m) }'; then echo "::error::$n: mean Δ $d on trigger cases is below $MIN_DELTA"; rc=1
+            else echo "$n: mean Δ $d"; fi
+          done
+          exit $rc
+
+      - name: Summarize
+        if: always() && steps.pick.outputs.skills != ''
+        env:
+          REUSED: ${{ steps.reuse.outputs.run }}
+        run: |
           {
-            echo "## Evals: $EVAL_MODEL, judge $JUDGE_MODEL, threshold $THRESHOLD"
+            echo "## Evals: $EVAL_MODEL, judge $JUDGE_MODEL, threshold $THRESHOLD, minimum Δ $MIN_DELTA, Claude Code $(claude --version | cut -d' ' -f1)"
+            [ -n "$REUSED" ] && echo "Results reused from pull-request run $REUSED (byte-identical files); no new model calls."
             echo "| Suite | Cases passed | Score | Δ on trigger cases | Cost |"
             echo "|---|---|---|---|---|"
             for f in eval-out/*.json; do
@@ -109,7 +162,7 @@ jobs:
                 ([.cases[] | select(.name | test("nomatch-") | not) | .aggregates.delta // empty]) as $d
                 | (if ($d | length) > 0 then ($d | add / length) else null end) as $td
                 | "| \($name) | \(.aggregates.casesPassed)/\(.aggregates.casesTotal) | \(.aggregates.overallScore * 100 | round / 100)"
-                  + " | \(if $td == null then "n/a" elif $td < $min then "**\($td * 100 | round / 100): does not beat the baseline**" else ($td * 100 | round / 100 | tostring) end)"
+                  + " | \(if $td == null then "n/a" elif $td < $min then "**\($td * 100 | round / 100): below the minimum**" else ($td * 100 | round / 100 | tostring) end)"
                   + " | $\(.costUsd * 100 | round / 100) |"' "$f"
             done
           } >> "$GITHUB_STEP_SUMMARY"
@@ -123,35 +176,57 @@ jobs:
 
   promote:
     needs: evals
-    if: github.event_name == 'workflow_dispatch' && inputs.promote && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.promote && inputs.claude_code_version == '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write
     env:
       SKILLS: ${{ needs.evals.outputs.skills }}
     steps:
+      # stable and release tags are protected by rulesets whose only bypass is a deploy key
+      # (GitHub Actions can't bypass rulesets on a personal account), so pushes use that key.
+      - name: Deploy key is configured
+        env:
+          KEY: ${{ secrets.PROMOTE_DEPLOY_KEY }}
+        run: '[ -n "$KEY" ] || { echo "::error::secret PROMOTE_DEPLOY_KEY is not set (docs/runbook.md)"; exit 1; }'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ssh-key: ${{ secrets.PROMOTE_DEPLOY_KEY }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - name: Install Claude Code
-        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+        run: npm install -g "@anthropic-ai/claude-code@$(cat .github/claude-code-version)"
 
-      - name: Every changed skill has a new version and a changelog entry
+      - name: A skill whose shipped files changed has a new version and a changelog entry
+        id: versions
         run: |
+          release=""
           for s in $SKILLS; do
             new=$(jq -r .version "plugins/$s/.claude-plugin/plugin.json")
-            old=$(git show "origin/stable:plugins/$s/.claude-plugin/plugin.json" 2>/dev/null | jq -r .version || true)
-            [ "$new" != "$old" ] || { echo "::error::$s changed but its version is still $new"; exit 1; }
+            if git rev-parse -q --verify origin/stable >/dev/null; then
+              shipped=$(git diff --name-only origin/stable...HEAD -- "plugins/$s/skills" "plugins/$s/.claude-plugin")
+              old=$(git show "origin/stable:plugins/$s/.claude-plugin/plugin.json" 2>/dev/null | jq -r .version || true)
+            else shipped=new; old=""; fi
+            [ -n "$shipped" ] || continue   # eval-only change: nothing new ships
+            [ "$new" != "$old" ] || { echo "::error::$s: shipped files changed but its version is still $new"; exit 1; }
             grep -q "^## $new\$" "plugins/$s/CHANGELOG.md" || { echo "::error::plugins/$s/CHANGELOG.md has no '## $new' entry"; exit 1; }
+            release="$release $s"
           done
+          echo "release=$(echo $release)" >> "$GITHUB_OUTPUT"
 
-      - name: Fast-forward stable and tag each release
+      - name: Fast-forward stable and tag each new version
+        env:
+          RELEASE: ${{ steps.versions.outputs.release }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git push origin HEAD:refs/heads/stable   # refused unless it is a fast-forward
-          for s in $SKILLS; do claude plugin tag "plugins/$s" --push; done
+          git push origin HEAD:refs/heads/stable   # deploy key; the stable ruleset refuses anything but a fast-forward
+          for s in $RELEASE; do claude plugin tag "plugins/$s" --push; done
+
+  smoke:
+    needs: promote
+    uses: ./.github/workflows/smoke.yml
+    with:
+      ref: stable
+    secrets: inherit
