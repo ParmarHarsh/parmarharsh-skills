@@ -27,6 +27,10 @@ git diff && git add .claude && git commit -m "skills: sync stable"
 
 `.notes/consumers.md` (private) lists which repos use which skills.
 
+## When CI hits the plan's usage limit
+
+CI evals share your Claude plan's usage limit. A job that hits it fails with "The plan's usage limit was reached". After the limit resets, open the run and choose **Re-run failed jobs**. Jobs that already passed (one per skill, plus collision) keep their results, so only the failed part spends usage again.
+
 ## Roll back
 
 | Scope | How |

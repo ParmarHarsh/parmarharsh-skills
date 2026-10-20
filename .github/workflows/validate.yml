@@ -49,6 +49,14 @@ jobs:
           fi
           bin/check-skills ${base:+--base "$base"}
 
+      - name: Lint workflows (actionlint, pinned and checksum-verified)
+        run: |
+          v=1.7.7; sum=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v$v/actionlint_${v}_linux_amd64.tar.gz" -o "$RUNNER_TEMP/al.tgz"
+          echo "$sum  $RUNNER_TEMP/al.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/al.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
       - name: skills-sync behavior test
         run: tests/skills-sync-test.sh "$RUNNER_TEMP/skills-sync-test"
 
