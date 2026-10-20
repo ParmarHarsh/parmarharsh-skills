@@ -45,7 +45,8 @@ jobs:
           export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"   # nothing personal: no ~/.claude, no settings
           git config --global user.name smoke && git config --global user.email smoke@example.invalid
           C="$RUNNER_TEMP/consumer"; git init -q "$C" && cd "$C" && git commit -q --allow-empty -m init
-          "$GITHUB_WORKSPACE/bin/skills-sync" sync --lib "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --ref "$REF" $(ls "$GITHUB_WORKSPACE/plugins")
+          mapfile -t skills < <(find "$GITHUB_WORKSPACE/plugins" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+          "$GITHUB_WORKSPACE/bin/skills-sync" sync --lib "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --ref "$REF" "${skills[@]}"
           git add -A && git commit -qm "skills: sync $REF" && "$GITHUB_WORKSPACE/bin/skills-sync" check
           cat .claude/skills.lock
 
@@ -54,8 +55,9 @@ jobs:
           export HOME="$RUNNER_TEMP/home"; cd "$RUNNER_TEMP/consumer"
           claude -p "x" --output-format stream-json --verbose 2>/dev/null | jq -c 'select(.type=="system" and .subtype=="init") | .skills' > skills.json || true
           rc=0
-          for s in $(ls "$GITHUB_WORKSPACE/plugins"); do
-            jq -e --arg s "$s" 'index($s) != null' skills.json >/dev/null && echo "listed: $s" || { echo "::error::$s is not listed"; rc=1; }
+          for d in "$GITHUB_WORKSPACE"/plugins/*/; do
+            s=$(basename "$d")
+            if jq -e --arg s "$s" 'index($s) != null' skills.json >/dev/null; then echo "listed: $s"; else echo "::error::$s is not listed"; rc=1; fi
           done
           exit $rc
 
@@ -65,7 +67,8 @@ jobs:
         run: |
           export HOME="$RUNNER_TEMP/home"; cd "$RUNNER_TEMP/consumer"
           rc=0
-          for s in $(ls "$GITHUB_WORKSPACE/plugins"); do
+          for d in "$GITHUB_WORKSPACE"/plugins/*/; do
+            s=$(basename "$d")
             case=$(grep -l 'tags: \[trigger' "$GITHUB_WORKSPACE"/plugins/"$s"/evals/*/prompt.md | sort | head -1)
             prompt=$(awk 'f>=2 {print} /^---$/ {f++}' "$case" | sed '/./,$!d')
             claude -p "$prompt" --model "$EVAL_MODEL" --max-turns 3 --output-format stream-json --verbose > "run-$s.jsonl" 2>&1 || true

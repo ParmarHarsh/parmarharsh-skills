@@ -41,9 +41,9 @@ jobs:
 
       - name: Skill rules (bin/check-skills)
         env:
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
-          base="$BASE"
+          base="$BASE_SHA"
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             base=$(git rev-parse -q --verify origin/main || true)   # new branch: compare with main
           fi
@@ -79,6 +79,7 @@ jobs:
           fi
           added_removed() { git diff -U0 "$base" HEAD -- "$@" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' || true; }
           section() { echo "### $1"; if [ -n "$2" ]; then echo '```'; echo "$2"; echo '```'; else echo "none"; fi; echo; }
+          # shellcheck disable=SC2016  # the backticks below are a literal grep pattern for `!` injection
           {
             echo "## Sensitive changes since ${base:0:12}"
             section "allowed-tools" "$(added_removed '*SKILL.md' | grep -E '^[+-]allowed-tools:' || true)"

@@ -62,16 +62,17 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then base="origin/$BASE_REF"
           elif git rev-parse -q --verify origin/stable >/dev/null; then base=origin/stable
           else base=""; fi
-          all=$(ls plugins | tr '\n' ' ')
+          all=$(find plugins -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | tr '\n' ' ')
           if [ "$INPUT_SKILLS" = all ]; then skills=$all
           elif [ -n "$INPUT_SKILLS" ] && [ "$INPUT_SKILLS" != changed ]; then skills=$INPUT_SKILLS
           elif [ -z "$base" ]; then skills=$all
           elif git diff --name-only "$base"...HEAD -- fixtures evals .github/workflows/evals.yml .github/claude-code-version | grep -q .; then skills=$all
           else skills=$(git diff --name-only "$base"...HEAD -- plugins | cut -d/ -f2 | sort -u | tr '\n' ' ')
           fi
-          for s in $skills; do [ -d "plugins/$s" ] || { echo "::error::no such skill: $s"; exit 1; }; done
-          echo "skills=$(echo $skills)" >> "$GITHUB_OUTPUT"
-          echo "matrix=$(printf '%s\n' $skills | jq -R . | jq -sc 'map(select(. != ""))')" >> "$GITHUB_OUTPUT"
+          read -r -a list <<< "$skills"   # one word per skill
+          for s in "${list[@]}"; do [ -d "plugins/$s" ] || { echo "::error::no such skill: $s"; exit 1; }; done
+          echo "skills=${list[*]}" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(printf '%s\n' "${list[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" >> "$GITHUB_OUTPUT"
           echo "Evaluating: ${skills:-none} (base: ${base:-none})"
 
       # Promote would otherwise pay for the same evals twice. Reuse a passing pull-request run
@@ -290,7 +291,7 @@ jobs:
             grep -q "^## $new\$" "plugins/$s/CHANGELOG.md" || { echo "::error::plugins/$s/CHANGELOG.md has no '## $new' entry"; exit 1; }
             release="$release $s"
           done
-          echo "release=$(echo $release)" >> "$GITHUB_OUTPUT"
+          echo "release=${release# }" >> "$GITHUB_OUTPUT"
 
       - name: Fast-forward stable and tag each new version
         env:
