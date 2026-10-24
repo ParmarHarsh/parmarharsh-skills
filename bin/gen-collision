@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Regenerate the collision suite in evals/ from every skill's own eval cases.
+
+Each case plugins/<skill>/evals/<case>/prompt.md becomes evals/<skill>--<case>/ with
+the same prompt, every library skill loaded, and Skill graders: the case's own skill
+must fire (trigger cases) and every other skill must not fire. Near-miss cases
+(names starting with "nomatch-") require that no skill fires.
+
+  bin/gen-collision          rewrite evals/ to match
+  bin/gen-collision --check  exit 1 if evals/ is out of date (used in CI)
+"""
+import os
+import shutil
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PLUGINS = os.path.join(ROOT, "plugins")
+OUT = os.path.join(ROOT, "evals")
+
+FIRES = "---\ntype: tool_used\ntool: Skill\ninput_match: '\"skill\"\\s*:\\s*\"(?:[\\w-]+:)?%s\"'\n---\n"
+QUIET = FIRES[: -len("---\n")] + "min: 0\nmax: 0\narm: both\n---\n"
+
+
+def prompt_body(path):
+    text = open(path, encoding="utf-8").read()
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        sys.exit(f"{path}: prompt.md needs frontmatter")
+    return parts[2].lstrip("\n")
+
+
+def build(dest):
+    skills = sorted(d for d in os.listdir(PLUGINS) if os.path.isdir(os.path.join(PLUGINS, d, "evals")))
+    plugin_list = ", ".join(f'"../../plugins/{s}"' for s in skills)
+    for s in skills:
+        evals = os.path.join(PLUGINS, s, "evals")
+        for case in sorted(os.listdir(evals)):
+            src = os.path.join(evals, case, "prompt.md")
+            if not os.path.isfile(src):
+                continue
+            trigger = not case.startswith("nomatch-")
+            d = os.path.join(dest, f"{s}--{case}")
+            os.makedirs(os.path.join(d, "graders"))
+            front = (
+                "---\nmax_turns: 6\ntimeout_seconds: 300\nallowed_tools: [Read, Glob, Grep, Skill]\n"
+                f"tags: [collision, {'trigger' if trigger else 'near-miss'}]\n"
+                f"plugins: [{plugin_list}]\n---\n\n"
+            )
+            with open(os.path.join(d, "prompt.md"), "w", encoding="utf-8") as f:
+                f.write(front + prompt_body(src))
+            for o in skills:
+                name, body = (f"fires-{o}", FIRES % o) if (trigger and o == s) else (f"not-{o}", QUIET % o)
+                with open(os.path.join(d, "graders", name + ".md"), "w", encoding="utf-8") as f:
+                    f.write(body)
+
+
+def tree(path):
+    out = {}
+    for base, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d != "results"]
+        for fn in files:
+            p = os.path.join(base, fn)
+            out[os.path.relpath(p, path)] = open(p, "rb").read()
+    return out
+
+
+def main():
+    check = "--check" in sys.argv[1:]
+    with tempfile.TemporaryDirectory() as tmp:
+        new = os.path.join(tmp, "evals")
+        os.makedirs(new)
+        build(new)
+        want, have = tree(new), (tree(OUT) if os.path.isdir(OUT) else {})
+        if want == have:
+            print("collision suite is up to date")
+            return 0
+        if check:
+            for p in sorted(set(want) | set(have)):
+                if want.get(p) != have.get(p):
+                    print(f"out of date: evals/{p}")
+            print("run bin/gen-collision and commit the result")
+            return 1
+        results = os.path.join(OUT, "results")
+        keep = os.path.join(tmp, "results")
+        if os.path.isdir(results):
+            shutil.move(results, keep)
+        shutil.rmtree(OUT, ignore_errors=True)
+        shutil.copytree(new, OUT)
+        if os.path.isdir(keep):
+            shutil.move(keep, results)
+        print(f"rewrote evals/ ({len(want)} files)")
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,81 @@
+name: consumer-smoke
+
+# What a project sees: on a fresh runner with an empty HOME, make a new repo, vendor every
+# skill from the library with bin/skills-sync, and check that a session lists each skill
+# and that a canonical prompt (the skill's first trigger case) makes Claude invoke it.
+# Runs after every promote, or by hand. Costs one short model run per skill.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Library ref to vendor from
+        default: stable
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: stable
+
+permissions:
+  contents: read
+
+env:
+  # The owner's default model, so every release is confirmed to trigger where it is actually used.
+  # The evals workflow scores on claude-sonnet-5-5 (same verdicts in measurement, half the usage).
+  EVAL_MODEL: claude-opus-5-5
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        run: npm install -g "@anthropic-ai/claude-code@$(cat .github/claude-code-version)"
+
+      - name: Fresh consumer vendors every skill
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"   # nothing personal: no ~/.claude, no settings
+          git config --global user.name smoke && git config --global user.email smoke@example.invalid
+          C="$RUNNER_TEMP/consumer"; git init -q "$C" && cd "$C" && git commit -q --allow-empty -m init
+          mapfile -t skills < <(find "$GITHUB_WORKSPACE/plugins" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+          "$GITHUB_WORKSPACE/bin/skills-sync" sync --lib "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --ref "$REF" "${skills[@]}"
+          git add -A && git commit -qm "skills: sync $REF" && "$GITHUB_WORKSPACE/bin/skills-sync" check
+          cat .claude/skills.lock
+
+      - name: A session lists every vendored skill
+        run: |
+          export HOME="$RUNNER_TEMP/home"; cd "$RUNNER_TEMP/consumer"
+          claude -p "x" --output-format stream-json --verbose 2>/dev/null | jq -c 'select(.type=="system" and .subtype=="init") | .skills' > skills.json || true
+          rc=0
+          for d in "$GITHUB_WORKSPACE"/plugins/*/; do
+            s=$(basename "$d")
+            if jq -e --arg s "$s" 'index($s) != null' skills.json >/dev/null; then echo "listed: $s"; else echo "::error::$s is not listed"; rc=1; fi
+          done
+          exit $rc
+
+      - name: A canonical prompt invokes each skill
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          export HOME="$RUNNER_TEMP/home"; cd "$RUNNER_TEMP/consumer"
+          rc=0
+          for d in "$GITHUB_WORKSPACE"/plugins/*/; do
+            s=$(basename "$d")
+            case=$(grep -l 'tags: \[trigger' "$GITHUB_WORKSPACE"/plugins/"$s"/evals/*/prompt.md | sort | head -1)
+            prompt=$(awk 'f>=2 {print} /^---$/ {f++}' "$case" | sed '/./,$!d')
+            claude -p "$prompt" --model "$EVAL_MODEL" --max-turns 3 --output-format stream-json --verbose > "run-$s.jsonl" 2>&1 || true
+            if jq -e --arg s "$s" 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and .name=="Skill") | select(.input.skill == $s or (.input.skill | endswith(":" + $s)))' "run-$s.jsonl" >/dev/null; then
+              echo "fired: $s ($(basename "$(dirname "$case")"))"
+            else
+              echo "::error::$s did not fire on $(basename "$(dirname "$case")")"; rc=1
+            fi
+          done
+          exit $rc

@@ -1,8 +1,11 @@
 {
   "name": "release-readiness",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Go/no-go readiness check before shipping a build to an environment.",
-  "author": { "name": "Harsh Parmar", "url": "https://github.com/ParmarHarsh" },
+  "author": {
+    "name": "Harsh Parmar",
+    "url": "https://github.com/ParmarHarsh"
+  },
   "license": "MIT",
   "repository": "https://github.com/ParmarHarsh/parmarharsh-skills"
 }
