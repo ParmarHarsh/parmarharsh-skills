@@ -1,10 +1,10 @@
 ---
 name: release-readiness
-description: Runs a go/no-go readiness check before a build ships to production, staging, a pilot or a launch. It runs the preflight gates, inventories every environment variable the code reads against what is documented, checks migrations, health checks, secrets, backups and the rollback path, and ends in a GO or NO-GO verdict with blockers. Use when the user asks whether an app is ready to deploy, ship, release, launch or pilot, or asks for a preflight, a deployment checklist, or a go/no-go. Not for running the deploy itself or writing CI pipelines.
+description: Go/no-go readiness check before a build ships to production, staging, a pilot or a launch. Runs the preflight gates, checks every environment variable the code reads against the docs, and reviews migrations, health checks, secrets, backups and rollback, ending in GO or NO-GO with blockers. Use when the user asks if an app is ready to deploy, ship, release, launch or pilot, or for a preflight, deployment checklist or go/no-go. Not for running a deploy or writing CI pipelines.
 license: MIT
 compatibility: Works best with shell access to run the project's checks. Without it, unrun gates are reported as UNKNOWN.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Release readiness

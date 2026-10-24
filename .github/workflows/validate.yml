@@ -9,7 +9,6 @@ permissions:
   contents: read
 
 env:
-  CLAUDE_CODE_VERSION: 2.1.301
   # skills-ref from the Agent Skills spec repo, pinned (PyPI's skills-ref ships a different CLI name)
   SKILLS_REF: git+https://github.com/agentskills/agentskills@69ef37e9424c0a7ea9dd2293b559e43ec8176379#subdirectory=skills-ref
 
@@ -29,7 +28,7 @@ jobs:
           python-version: "3.12"
       - name: Install validators
         run: |
-          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          npm install -g "@anthropic-ai/claude-code@$(cat .github/claude-code-version)"
           pip install "${SKILLS_REF}"
 
       - name: claude plugin validate (strict)
@@ -38,27 +37,34 @@ jobs:
           for p in plugins/*/; do claude plugin validate --strict "$p"; done
 
       - name: skills-ref validate
-        run: for s in plugins/*/skills/*/; do skills-ref validate "$s"; done
+        run: for s in plugins/*/skills/*/ .claude/skills/*/; do [ -d "$s" ] && skills-ref validate "$s"; done
 
-      - name: Eval fixtures are exact copies of fixtures/notes-app
+      - name: Skill rules (bin/check-skills)
         run: |
-          rc=0
-          for d in plugins/*/evals/*/project; do
-            diff -r --exclude=docs fixtures/notes-app "$d" || { echo "::error::$d differs from fixtures/notes-app"; rc=1; }
-          done
-          exit $rc
+          # Version bumps are owed relative to what is released (stable), not to the previous push,
+          # so several commits to one unreleased change need a single bump.
+          base=$(git rev-parse -q --verify origin/stable || git rev-parse -q --verify origin/main || true)
+          bin/check-skills ${base:+--base "$base"}
 
-      - name: Collision suite covers every case with the same prompt
+      - name: Lint workflows (actionlint, pinned and checksum-verified)
         run: |
-          body() { awk 'f>=2 {print} /^---$/ {f++}' "$1"; }
-          rc=0
-          for src in plugins/*/evals/*/prompt.md; do
-            skill=$(echo "$src" | cut -d/ -f2); case=$(basename "$(dirname "$src")")
-            copy="evals/${skill}--${case}/prompt.md"
-            if [ ! -f "$copy" ]; then echo "::error::missing collision case $copy"; rc=1; continue; fi
-            diff <(body "$src") <(body "$copy") >/dev/null || { echo "::error::$copy prompt differs from $src"; rc=1; }
-          done
-          exit $rc
+          v=1.7.7; sum=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v$v/actionlint_${v}_linux_amd64.tar.gz" -o "$RUNNER_TEMP/al.tgz"
+          echo "$sum  $RUNNER_TEMP/al.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/al.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+      - name: skills-sync behavior test
+        run: tests/skills-sync-test.sh "$RUNNER_TEMP/skills-sync-test"
+
+      - name: CI token expiry
+        run: |
+          exp=$(cat .github/ci-token-expires); now=$(date -u +%F); warn=$(date -u -d "$exp -30 days" +%F)
+          if [[ "$now" > "$exp" ]]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN expired on $exp. Rotate it (docs/runbook.md) and update .github/ci-token-expires"; exit 1
+          elif [[ "$now" > "$warn" ]]; then
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN expires on $exp. Rotate it soon (docs/runbook.md)"
+          fi
 
       - name: Summarize changes to allowed-tools, hooks, scripts and ! injection
         env:
@@ -70,10 +76,11 @@ jobs:
           fi
           added_removed() { git diff -U0 "$base" HEAD -- "$@" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' || true; }
           section() { echo "### $1"; if [ -n "$2" ]; then echo '```'; echo "$2"; echo '```'; else echo "none"; fi; echo; }
+          # shellcheck disable=SC2016  # the backticks below are a literal grep pattern for `!` injection
           {
             echo "## Sensitive changes since ${base:0:12}"
-            section "allowed-tools" "$(added_removed '*.md' | grep -E 'allowed-tools' || true)"
+            section "allowed-tools" "$(added_removed '*SKILL.md' | grep -E '^[+-]allowed-tools:' || true)"
             section "hooks" "$(git diff --name-status "$base" HEAD | grep -E '(^|/)hooks(/|\.json)' || true; added_removed '*.md' '*.json' | grep -E '"hooks"|^[+-]hooks:' || true)"
-            section "scripts and workflows" "$(git diff --name-status "$base" HEAD | grep -E '(^|[[:space:]])(bin|scripts|\.github/workflows)/|/scripts/|\.sh$' || true)"
-            section "! shell injection in skill text" "$(added_removed 'plugins/*.md' | grep -F '!`' || true)"
+            section "scripts and workflows" "$(git diff --name-status "$base" HEAD | grep -E '(^|[[:space:]])(bin|scripts|tests|\.github/workflows)/|/scripts/|\.sh$' || true)"
+            section "! shell injection in skill text" "$(added_removed 'plugins/*.md' '.claude/*.md' | grep -E '(^[+-]|[^`])!`[^`]+`' || true)"
           } >> "$GITHUB_STEP_SUMMARY"

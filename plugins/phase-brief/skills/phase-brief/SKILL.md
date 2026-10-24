@@ -1,21 +1,16 @@
 ---
 name: phase-brief
-description: Writes the brief that a separate execution session (another Claude Code session or agent) follows to carry out one phase of work, and grades that session's result against its brief. Use when the user asks to write, draft or prepare the brief, handoff or instructions for the next phase, an implementation session, or another agent, or to grade or check a phase result or report against what was asked. Not for project roadmaps, pull request descriptions, or reviewing a diff.
+description: Writes the brief that a separate execution session (another Claude Code session or agent) follows to carry out one phase of work. Use when the user asks to write, draft or prepare the brief, handoff or instructions for the next phase, an implementation session, or another agent. Not for project roadmaps, pull request descriptions, reviewing a diff, or grading a finished result.
 license: MIT
 metadata:
-  version: "1.0.0"
+  version: "2.0.0"
 ---
 
 # Phase brief
 
-You are the architect. A different session executes the brief with none of your context, so the brief must stand on its own. This skill has two modes:
+You are the architect. A different session executes the brief with none of your context, so the brief must stand on its own.
 
-- **Write**: produce the brief for the next phase.
-- **Grade**: check a returned result against its brief.
-
-## Write a brief
-
-### 1. Ground it in the code
+## 1. Ground it in the code
 
 Before writing anything, read what the brief will describe. Collect:
 
@@ -24,13 +19,13 @@ Before writing anything, read what the brief will describe. Collect:
 - **Baseline**: the gate's numbers (tests passing, lint errors and warnings, build and smoke status). Run the gate if you can. If you can't, the executor must record the baseline first.
 - **Evidence**: a `path:line` for every claim about the code, from a file you actually opened. Never describe code you haven't read.
 
-If there is no repository to read, say what you are assuming and keep those assumptions visible in the brief.
+If there is no repository to read, or the code the user names isn't there, don't stop to ask for it. Say so in one line, then write the complete brief anyway. Mark every unknown (paths, gate commands, baseline numbers) as a placeholder the executor must fill in first, and keep your assumptions visible.
 
-### 2. Scope one phase
+## 2. Scope one phase
 
 A phase is one coherent outcome that a single session can finish and verify. Split the work when items don't share a verification story. Order items so earlier ones never depend on later ones.
 
-### 3. Write it
+## 3. Write it
 
 Use [references/brief-template.md](references/brief-template.md). Keep the sections in this order:
 
@@ -63,7 +58,7 @@ Use [references/brief-template.md](references/brief-template.md). Keep the secti
 
    Close with three rules for the executor: a chat summary under 300 words; no pull request unless asked; no roadmap or next-phase proposal.
 
-### 4. Hand it off
+## 4. Hand it off
 
 Save the brief where the repo keeps briefs, otherwise in `docs/phases/<NN>-brief.md`, when the user wants a file. Otherwise return it in chat. Don't execute the brief yourself unless the user asks.
 
@@ -73,18 +68,3 @@ Before handing off, check that:
 - the preserve list and the exclusions name concrete things;
 - the gates use the repo's real commands;
 - a reader with no access to this conversation could execute it.
-
-## Grade a result
-
-Read the brief, the result record, and the diff when it's available. Follow [references/grading.md](references/grading.md) and produce:
-
-1. **Item table**: item, claimed outcome, evidence you checked, verdict (Met, Partly met, Not met, Unverified).
-2. **Gate check**:
-   - compare the numbers against the baseline;
-   - flag any edited test or weakened assertion;
-   - flag any gate the executor skipped.
-3. **Preserve list**: each entry confirmed intact, or violated with evidence.
-4. **Scope**: each deviation, and whether it was justified.
-5. **Carry forward**: unmet items and new findings that belong in the next brief.
-
-Verify claims yourself wherever you can: run the gate, open the files, read the diff. Label anything you only read in the report as "reported, not verified".

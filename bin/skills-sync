@@ -9,6 +9,9 @@
 #       unless --force.
 #   skills-sync check
 #       Exit 1 if any vendored skill differs from the lock (committed or uncommitted).
+#   skills-sync status
+#       Show, per vendored skill, whether the library's ref (usually stable) has moved past
+#       the locked copy. Exit 1 if any skill is behind or gone. Read-only.
 #   skills-sync remove SKILL...
 #       Delete the vendored copy and its lock line.
 #
@@ -89,11 +92,41 @@ cmd_sync() {
     tree=$(git -C "$tmp" rev-parse -q --verify "FETCH_HEAD:$src" 2>/dev/null) || die "no skill '$s' at $ref"
     rm -rf ".claude/skills/$s"
     mkdir -p ".claude/skills/$s"
-    git -C "$tmp" archive FETCH_HEAD "$src" | tar -x -C ".claude/skills/$s" --strip-components=4
+    # -m: stamp files with the current time. Keeping the archive's mtime can make git miss a
+    # same-size change (racy stat match), so git diff and git add would skip an upgrade.
+    git -C "$tmp" archive FETCH_HEAD "$src" | tar -x -m -C ".claude/skills/$s" --strip-components=4
     lines=$(printf '%s\n' "$lines" | awk -v s="$s" '$1!=s'; echo "$s $tree $commit $ref $lib")
   done
   printf '%s\n' "$lines" | awk 'NF' | write_lock
   echo "synced ${#skills[@]} skill(s) from $ref at ${commit:0:12}; review with git diff, then commit"
+}
+
+skill_version() { # skill_version <SKILL.md text on stdin>: the metadata.version value, or "?"
+  awk '/^---/{n++; next} n==1 && /^[[:space:]]+version:/{gsub(/[" ]/,"",$2); print $2; found=1; exit} END{if(!found) print "?"}'
+}
+
+cmd_status() {
+  [ -f "$LOCK" ] || { echo "no $LOCK"; return 0; }
+  TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+  local rc=0 s tree ref lib fetched=""
+  while read -r s tree _ ref lib; do
+    [[ -z "$s" || "$s" == \#* ]] && continue
+    local dir="$TMP/$(printf '%s' "$lib#$ref" | cksum | cut -d' ' -f1)"
+    if [ ! -d "$dir" ]; then
+      git init -q "$dir" && git -C "$dir" fetch -q --depth 1 "$lib" "$ref" || die "cannot fetch $ref from $lib"
+    fi
+    local have_v; have_v=$(skill_version < ".claude/skills/$s/SKILL.md" 2>/dev/null || echo "?")
+    local now; now=$(git -C "$dir" rev-parse -q --verify "FETCH_HEAD:plugins/$s/skills/$s" 2>/dev/null || echo missing)
+    if [ "$now" = missing ]; then
+      echo "GONE    $s $have_v: no longer at $ref"; rc=1
+    elif [ "$now" = "$tree" ]; then
+      echo "ok      $s $have_v: same as $ref"
+    else
+      local new_v; new_v=$(git -C "$dir" show "FETCH_HEAD:plugins/$s/skills/$s/SKILL.md" | skill_version)
+      echo "BEHIND  $s $have_v -> $new_v at $ref; run: skills-sync sync $s"; rc=1
+    fi
+  done < "$LOCK"
+  return $rc
 }
 
 cmd_remove() {
@@ -109,6 +142,7 @@ cmd_remove() {
 case "${1:-}" in
   sync) shift; cmd_sync "$@";;
   check) shift; cmd_check;;
+  status) shift; cmd_status;;
   remove) shift; cmd_remove "$@";;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2;;
+  *) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 2;;
 esac

@@ -11,7 +11,7 @@
     {
       "name": "phase-brief",
       "source": "./plugins/phase-brief",
-      "description": "Write the brief another session executes for one phase of work, and grade its result."
+      "description": "Write the brief another session executes for one phase of work."
     },
     {
       "name": "release-readiness",

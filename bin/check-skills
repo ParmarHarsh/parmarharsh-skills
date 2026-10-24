@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Enforce the library's rules for every skill. Run by CI on every push and pull request.
+
+  bin/check-skills [--base REF] [--denylist FILE] [--skip-budget]
+
+Rules (docs/adding-a-skill.md explains each):
+  layout       plugins/<s>/.claude-plugin/plugin.json names <s> and has a version;
+               the plugin holds exactly one skill, skills/<s>/SKILL.md
+  frontmatter  only the Agent Skills fields; name matches the folder
+  evals        >= 3 trigger cases (Skill grader for <s>, plus an output grader) and
+               >= 2 near-miss cases named nomatch-* (Skill grader min 0, max 0, arm both)
+  controls     every trigger case has controls/good.md and controls/bad.md; each regex
+               grader on the reply passes good.md and fails bad.md
+  budget       always-on cost from `claude plugin details` <= BUDGET tokens
+  release      with --base (CI passes the stable branch): a change to what ships (skills/ or
+               plugin.json) since that ref needs a new version and a "## <version>" CHANGELOG entry
+  fixtures     every case's project/ folder is an exact copy of a folder in fixtures/
+  collision    evals/ matches what bin/gen-collision would write
+  private      no home paths, personal emails or key-like strings in tracked files;
+               with --denylist, none of the listed terms either
+"""
+import argparse
+import filecmp
+import json
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SPEC_FIELDS = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
+BUDGET = 200
+errors, notes = [], []
+
+
+def fail(msg):
+    errors.append(msg)
+
+
+def git(*args):
+    return subprocess.run(["git", "-C", ROOT, *args], capture_output=True, text=True).stdout
+
+
+def frontmatter(path):
+    """Top-level keys and scalar values of a Markdown file's YAML frontmatter (no YAML library needed)."""
+    text = open(path, encoding="utf-8").read()
+    if not text.startswith("---\n"):
+        return None, text
+    end = text.find("\n---", 4)
+    if end < 0:
+        return None, text
+    keys = {}
+    for line in text[4:end].splitlines():
+        m = re.match(r"^([A-Za-z_][\w-]*):\s?(.*)$", line)
+        if m:
+            v = m.group(2).strip()
+            if len(v) >= 2 and v[0] == v[-1] == "'":
+                v = v[1:-1].replace("''", "'")
+            elif len(v) >= 2 and v[0] == v[-1] == '"':
+                v = v[1:-1]
+            keys[m.group(1)] = v
+    return keys, text[end + 4 :].lstrip("\n")
+
+
+def check_skill_md(path, want_name):
+    keys, _ = frontmatter(path)
+    if keys is None:
+        return fail(f"{rel(path)}: no frontmatter")
+    extra = set(keys) - SPEC_FIELDS
+    if extra:
+        fail(f"{rel(path)}: fields outside the Agent Skills spec: {', '.join(sorted(extra))}")
+    if keys.get("name") != want_name:
+        fail(f"{rel(path)}: name is {keys.get('name')!r}, folder is {want_name!r}")
+    if "allowed-tools" in keys:
+        notes.append(f"{rel(path)}: declares allowed-tools (needs explicit approval)")
+
+
+def rel(p):
+    return os.path.relpath(p, ROOT)
+
+
+def graders(case_dir):
+    gdir = os.path.join(case_dir, "graders")
+    out = []
+    if os.path.isdir(gdir):
+        for fn in sorted(os.listdir(gdir)):
+            if fn.endswith(".md"):
+                keys, body = frontmatter(os.path.join(gdir, fn))
+                out.append((fn[:-3], keys or {}, body))
+    return out
+
+
+def skill_grader(keys, skill):
+    return keys.get("type") == "tool_used" and keys.get("tool") == "Skill" and skill in keys.get("input_match", "")
+
+
+def regex_matches(keys, text):
+    flags = 0
+    for ch in keys.get("flags", ""):
+        flags |= {"i": re.I, "s": re.S, "m": re.M}.get(ch, 0)
+    found = len(re.findall(keys["pattern"], text, flags))
+    mode = keys.get("match", "contains")
+    if mode == "not_contains":
+        return found == 0
+    if mode.startswith("count:"):
+        return found == int(mode.split(":", 1)[1])
+    return found > 0
+
+
+def check_plugin(name, base):
+    pdir = os.path.join(ROOT, "plugins", name)
+    manifest = os.path.join(pdir, ".claude-plugin", "plugin.json")
+    if not os.path.isfile(manifest):
+        return fail(f"plugins/{name}: missing .claude-plugin/plugin.json")
+    meta = json.load(open(manifest))
+    if meta.get("name") != name:
+        fail(f"plugins/{name}/.claude-plugin/plugin.json: name {meta.get('name')!r} != {name!r}")
+    if not meta.get("version"):
+        fail(f"plugins/{name}/.claude-plugin/plugin.json: no version")
+    skills = sorted(os.listdir(os.path.join(pdir, "skills"))) if os.path.isdir(os.path.join(pdir, "skills")) else []
+    if skills != [name]:
+        fail(f"plugins/{name}/skills: must hold exactly one skill folder named {name!r} (found {skills})")
+    else:
+        check_skill_md(os.path.join(pdir, "skills", name, "SKILL.md"), name)
+
+    # evals
+    trig = near = 0
+    evals = os.path.join(pdir, "evals")
+    for case in sorted(os.listdir(evals)) if os.path.isdir(evals) else []:
+        cdir = os.path.join(evals, case)
+        if not os.path.isfile(os.path.join(cdir, "prompt.md")):
+            continue
+        gs = graders(cdir)
+        sk = [k for _, k, _ in gs if skill_grader(k, name)]
+        if case.startswith("nomatch-"):
+            if any(k.get("min") == "0" and k.get("max") == "0" and k.get("arm") == "both" for k in sk):
+                near += 1
+            else:
+                fail(f"plugins/{name}/evals/{case}: near-miss needs a Skill grader for {name} with min 0, max 0, arm both")
+            continue
+        if not any(k.get("min", "1") != "0" for k in sk):
+            fail(f"plugins/{name}/evals/{case}: trigger case needs a Skill grader for {name}")
+            continue
+        outputs = [(n, k) for n, k, _ in gs if not skill_grader(k, name)]
+        if not outputs:
+            fail(f"plugins/{name}/evals/{case}: trigger case needs at least one output grader")
+            continue
+        trig += 1
+        good, bad = os.path.join(cdir, "controls", "good.md"), os.path.join(cdir, "controls", "bad.md")
+        if not (os.path.isfile(good) and os.path.isfile(bad)):
+            fail(f"plugins/{name}/evals/{case}: missing controls/good.md or controls/bad.md")
+            continue
+        good_t, bad_t = open(good, encoding="utf-8").read(), open(bad, encoding="utf-8").read()
+        for gname, k in outputs:
+            if k.get("type") != "regex" or k.get("target", "last_message") != "last_message":
+                continue
+            if not regex_matches(k, good_t):
+                fail(f"plugins/{name}/evals/{case}/graders/{gname}: fails its good control (grader can never pass?)")
+            if regex_matches(k, bad_t):
+                fail(f"plugins/{name}/evals/{case}/graders/{gname}: passes its bad control (grader too weak)")
+    if trig < 3:
+        fail(f"plugins/{name}: {trig} trigger case(s), need at least 3")
+    if near < 2:
+        fail(f"plugins/{name}: {near} near-miss case(s), need at least 2")
+
+    # release
+    if base:
+        shipped = git("diff", "--name-only", f"{base}...HEAD", "--", f"plugins/{name}/skills", f"plugins/{name}/.claude-plugin").strip()
+        if shipped:
+            old = git("show", f"{base}:plugins/{name}/.claude-plugin/plugin.json")
+            old_v = json.loads(old).get("version") if old.strip() else None
+            new_v = meta.get("version")
+            if old_v == new_v:
+                fail(f"plugins/{name}: shipped files changed but version is still {new_v}")
+            log = os.path.join(pdir, "CHANGELOG.md")
+            if not (os.path.isfile(log) and re.search(rf"^## {re.escape(str(new_v))}\s*$", open(log).read(), re.M)):
+                fail(f"plugins/{name}/CHANGELOG.md: no '## {new_v}' entry")
+
+
+def check_budget(name):
+    try:
+        out = subprocess.run(
+            ["claude", "--plugin-dir", os.path.join(ROOT, "plugins", name), "plugin", "details", name],
+            capture_output=True, text=True, timeout=120,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return fail(f"plugins/{name}: could not run claude plugin details ({e})")
+    m = re.search(r"Always-on:\s*~?\s*([\d.]+)\s*(k?)\s*tok", out)
+    if not m:
+        return fail(f"plugins/{name}: could not read the always-on cost from claude plugin details")
+    tokens = float(m.group(1)) * (1000 if m.group(2) else 1)
+    if tokens > BUDGET:
+        fail(f"plugins/{name}: always-on cost ~{tokens:.0f} tokens exceeds the {BUDGET}-token budget")
+    else:
+        notes.append(f"plugins/{name}: always-on ~{tokens:.0f} tokens (budget {BUDGET})")
+
+
+def check_fixtures():
+    fixtures = [os.path.join(ROOT, "fixtures", d) for d in sorted(os.listdir(os.path.join(ROOT, "fixtures")))] if os.path.isdir(os.path.join(ROOT, "fixtures")) else []
+
+    def same(a, b):
+        c = filecmp.dircmp(a, b, ignore=["docs"])
+        if c.left_only or c.right_only or c.diff_files or c.funny_files:
+            return False
+        return all(same(os.path.join(a, d), os.path.join(b, d)) for d in c.common_dirs)
+
+    for base, dirs, _ in os.walk(os.path.join(ROOT, "plugins")):
+        if os.path.basename(base) == "project" and os.sep + "evals" + os.sep in base:
+            if not any(same(f, base) for f in fixtures):
+                fail(f"{rel(base)}: not an exact copy of any folder in fixtures/")
+            dirs[:] = []
+
+
+PRIVATE = [
+    (r"/Users/[A-Za-z0-9._-]+", "a macOS home path"),
+    (r"/home/(?!runner\b|tester\b)[a-z][a-z0-9._-]*", "a Linux home path"),
+    (r"sk-ant-[A-Za-z0-9_-]{8,}", "an Anthropic key or token"),
+    (r"gh[pousr]_[A-Za-z0-9]{20,}", "a GitHub token"),
+    (r"AKIA[0-9A-Z]{16}", "an AWS key id"),
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "a private key"),
+    (r"xox[abprs]-[A-Za-z0-9-]{10,}", "a Slack token"),
+]
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+EMAIL_OK = re.compile(r"(@example\.(com|org|net|invalid)$|\.example$|\.invalid$|^noreply@anthropic\.com$|@users\.noreply\.github\.com$)")
+
+
+def check_private(denylist):
+    terms = []
+    if denylist:
+        if not os.path.isfile(denylist):
+            fail(f"denylist {denylist} not found")
+        else:
+            terms = [t.strip().lower() for t in open(denylist, encoding="utf-8") if t.strip() and not t.startswith("#")]
+    files = [f for f in git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0") if f]
+    for f in files:
+        path = os.path.join(ROOT, f)
+        if not os.path.isfile(path):
+            continue
+        try:
+            text = open(path, encoding="utf-8").read()
+        except UnicodeDecodeError:
+            continue
+        for pat, what in PRIVATE:
+            for m in re.finditer(pat, text):
+                fail(f"{f}: looks like {what}: {m.group(0)[:24]}…")
+        for m in EMAIL.finditer(text):
+            if not EMAIL_OK.search(m.group(0)):
+                fail(f"{f}: personal-looking email address {m.group(0)}")
+        low = text.lower()
+        for t in terms:
+            if t in low:
+                fail(f"{f}: contains a denylisted term (line {low[: low.find(t)].count(chr(10)) + 1})")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base")
+    ap.add_argument("--denylist")
+    ap.add_argument("--skip-budget", action="store_true")
+    a = ap.parse_args()
+    plugins = sorted(d for d in os.listdir(os.path.join(ROOT, "plugins")) if os.path.isdir(os.path.join(ROOT, "plugins", d)))
+    for p in plugins:
+        check_plugin(p, a.base)
+        if not a.skip_budget:
+            check_budget(p)
+    for local in sorted(os.listdir(os.path.join(ROOT, ".claude", "skills"))) if os.path.isdir(os.path.join(ROOT, ".claude", "skills")) else []:
+        check_skill_md(os.path.join(ROOT, ".claude", "skills", local, "SKILL.md"), local)
+    check_fixtures()
+    r = subprocess.run([os.path.join(ROOT, "bin", "gen-collision"), "--check"], capture_output=True, text=True)
+    if r.returncode:
+        fail("collision suite out of date:\n  " + r.stdout.strip().replace("\n", "\n  "))
+    check_private(a.denylist)
+    for n in notes:
+        print(f"note: {n}")
+    for e in errors:
+        print(f"FAIL: {e}")
+    print(f"{len(plugins)} skill(s) checked: {'ok' if not errors else f'{len(errors)} problem(s)'}")
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
