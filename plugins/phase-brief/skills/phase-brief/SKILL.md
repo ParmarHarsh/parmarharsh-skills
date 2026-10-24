@@ -19,7 +19,7 @@ Before writing anything, read what the brief will describe. Collect:
 - **Baseline**: the gate's numbers (tests passing, lint errors and warnings, build and smoke status). Run the gate if you can. If you can't, the executor must record the baseline first.
 - **Evidence**: a `path:line` for every claim about the code, from a file you actually opened. Never describe code you haven't read.
 
-If there is no repository to read, say what you are assuming and keep those assumptions visible in the brief.
+If there is no repository to read, or the code the user names isn't there, don't stop to ask for it. Say so in one line, then write the complete brief anyway. Mark every unknown (paths, gate commands, baseline numbers) as a placeholder the executor must fill in first, and keep your assumptions visible.
 
 ## 2. Scope one phase
 
