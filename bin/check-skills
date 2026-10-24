@@ -12,8 +12,8 @@ Rules (docs/adding-a-skill.md explains each):
   controls     every trigger case has controls/good.md and controls/bad.md; each regex
                grader on the reply passes good.md and fails bad.md
   budget       always-on cost from `claude plugin details` <= BUDGET tokens
-  release      with --base: a change to what ships (skills/ or plugin.json) needs a new
-               version and a matching "## <version>" CHANGELOG entry
+  release      with --base (CI passes the stable branch): a change to what ships (skills/ or
+               plugin.json) since that ref needs a new version and a "## <version>" CHANGELOG entry
   fixtures     every case's project/ folder is an exact copy of a folder in fixtures/
   collision    evals/ matches what bin/gen-collision would write
   private      no home paths, personal emails or key-like strings in tracked files;

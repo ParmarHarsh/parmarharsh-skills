@@ -40,13 +40,10 @@ jobs:
         run: for s in plugins/*/skills/*/ .claude/skills/*/; do [ -d "$s" ] && skills-ref validate "$s"; done
 
       - name: Skill rules (bin/check-skills)
-        env:
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
-          base="$BASE_SHA"
-          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base=$(git rev-parse -q --verify origin/main || true)   # new branch: compare with main
-          fi
+          # Version bumps are owed relative to what is released (stable), not to the previous push,
+          # so several commits to one unreleased change need a single bump.
+          base=$(git rev-parse -q --verify origin/stable || git rev-parse -q --verify origin/main || true)
           bin/check-skills ${base:+--base "$base"}
 
       - name: Lint workflows (actionlint, pinned and checksum-verified)
