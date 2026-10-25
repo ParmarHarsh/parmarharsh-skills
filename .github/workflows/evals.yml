@@ -81,9 +81,11 @@ jobs:
           for s in "${list[@]}"; do [ -d "plugins/$s" ] || { echo "::error::no such skill: $s"; exit 1; }; done
           collision=false
           if [ ${#list[@]} -gt 0 ] || { [ -n "$base" ] && git diff --name-only "$base"...HEAD -- evals | grep -q .; }; then collision=true; fi
-          echo "skills=${list[*]}" >> "$GITHUB_OUTPUT"
-          echo "matrix=$(printf '%s\n' "${list[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" >> "$GITHUB_OUTPUT"
-          echo "collision=$collision" >> "$GITHUB_OUTPUT"
+          {
+            echo "skills=${list[*]}"
+            echo "matrix=$(printf '%s\n' "${list[@]}" | jq -R . | jq -sc 'map(select(. != ""))')"
+            echo "collision=$collision"
+          } >> "$GITHUB_OUTPUT"
           echo "Evaluating: ${list[*]:-none}; collision suite: $collision (base: ${base:-none})"
 
       # Promote would otherwise pay for the same evals twice. Reuse a passing pull-request run
