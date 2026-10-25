@@ -17,7 +17,10 @@ Projects get plain copies under `.claude/skills/`. Claude Code loads these in th
 # from inside the project; bin/ is in a local clone of this repo
 ~/path/to/parmarharsh-skills/bin/skills-sync sync phase-brief release-readiness
 git add .claude && git commit -m "skills: sync stable"
+~/path/to/parmarharsh-skills/bin/skills-sync check
 ```
+
+Run `check` after the commit: before it, the fresh copies show as `DRIFT … uncommitted changes`.
 
 `sync` copies each skill from the `stable` branch and records it in `.claude/skills.lock`:
 
@@ -33,14 +36,14 @@ Day-to-day commands:
 | Roll back | `git revert` the sync commit |
 | Hold one skill at an older release | `skills-sync sync --ref <skill>--v<version> <skill>` |
 | Stop using a skill | `skills-sync remove <skill>` |
-| Detect hand edits | `skills-sync check` exits 1 if any copy differs from the lock |
+| Detect hand edits | `skills-sync check` (after committing) exits 1 if any copy differs from the lock |
 
 `sync` refuses to overwrite a hand-edited copy unless you pass `--force`. Change skills here, not in the copies.
 
 ## Layout
 
 ```
-.claude-plugin/marketplace.json   one entry per skill plugin
+.claude-plugin/marketplace.json   one entry per skill plugin (bin/check-skills checks it and the table above)
 plugins/<skill>/
   .claude-plugin/plugin.json      version, bumped on every release
   skills/<skill>/SKILL.md         the skill, plus references/
@@ -52,6 +55,7 @@ templates/skill/                  starting point for a new skill
 .claude/skills/new-library-skill  project-only skill that adds a skill to these rules
 bin/skills-sync                   vendor skills into a project; check, status, remove
 bin/check-skills                  the rules CI enforces
+bin/precheck                      validate's free checks, run locally before a pull request
 docs/                             adding-a-skill.md (the bar) and runbook.md (everything else)
 ```
 

@@ -2,8 +2,9 @@ name: consumer-smoke
 
 # What a project sees: on a fresh runner with an empty HOME, make a new repo, vendor every
 # skill from the library with bin/skills-sync, and check that a session lists each skill
-# and that a canonical prompt (the skill's first trigger case) makes Claude invoke it.
-# Runs after every promote, or by hand. Costs one short model run per skill.
+# and that a canonical prompt (the skill's alphabetically first trigger case) makes Claude invoke it.
+# Runs after every promote, or by hand. Costs one short model run per skill; the job summary
+# shows each run's total_cost_usd.
 on:
   workflow_dispatch:
     inputs:
@@ -66,16 +67,28 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           export HOME="$RUNNER_TEMP/home"; cd "$RUNNER_TEMP/consumer"
-          rc=0
+          rc=0; rows=""; total=0
           for d in "$GITHUB_WORKSPACE"/plugins/*/; do
             s=$(basename "$d")
             case=$(grep -l 'tags: \[trigger' "$GITHUB_WORKSPACE"/plugins/"$s"/evals/*/prompt.md | sort | head -1)
+            name=$(basename "$(dirname "$case")")
             prompt=$(awk 'f>=2 {print} /^---$/ {f++}' "$case" | sed '/./,$!d')
             claude -p "$prompt" --model "$EVAL_MODEL" --max-turns 3 --output-format stream-json --verbose > "run-$s.jsonl" 2>&1 || true
             if jq -e --arg s "$s" 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and .name=="Skill") | select(.input.skill == $s or (.input.skill | endswith(":" + $s)))' "run-$s.jsonl" >/dev/null; then
-              echo "fired: $s ($(basename "$(dirname "$case")"))"
+              fired=yes; echo "fired: $s ($name)"
             else
-              echo "::error::$s did not fire on $(basename "$(dirname "$case")")"; rc=1
+              fired=no; echo "::error::$s did not fire on $name"; rc=1
             fi
+            cost=$(jq -Rr 'fromjson? | select(.type=="result") | .total_cost_usd // empty' "run-$s.jsonl" | tail -1)
+            rows+="| $s | $name | $fired | ${cost:-not reported} |"$'\n'
+            total=$(awk -v t="$total" -v c="${cost:-0}" 'BEGIN { printf "%.4f", t + c }')
           done
+          {
+            echo "## Canonical prompts on $EVAL_MODEL"
+            echo
+            echo "| Skill | Case | Fired | Cost (USD) |"
+            echo "|---|---|---|---|"
+            printf '%s' "$rows"
+            echo "| **Total** | | | $total |"
+          } >> "$GITHUB_STEP_SUMMARY"
           exit $rc

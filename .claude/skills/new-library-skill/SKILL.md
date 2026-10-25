@@ -10,7 +10,7 @@ metadata:
 
 Follow [docs/adding-a-skill.md](../../../docs/adding-a-skill.md). It is the bar CI enforces. Ask the user before:
 
-- each model-backed run, with its estimate (about $0.05 per eval run on `claude-sonnet-5-5`);
+- each model-backed run, with its estimate (about 5 cents per eval case on `claude-sonnet-5-5`; a five-case skill measured 18 cents);
 - each commit (show the diff), push, or pull request;
 - anything that adds `allowed-tools`, hooks, scripts (including a `fixture.sh`) or `!` shell injection.
 
@@ -32,12 +32,14 @@ Replace every `NAME` and capitalized placeholder.
 - **Description:** what it does, then when to use it in the words a user would type, then what it is not for. Keep it under about 500 characters.
 - **Body:** concrete steps with evidence to collect. Keep it under about 150 lines; long templates go in `references/`.
 - **Specifics:** invent every one. Nothing from real projects, clients, hosts or people.
+- **Listing:** add a `plugins` entry to `.claude-plugin/marketplace.json` (`name`, `source: ./plugins/<name>`, a one-line `description`) and a row to the skills table in `README.md`, both in name order.
 
 ## 3. Write the eval cases
 
 Rename each case folder after what it tests.
 
 - **3 or more trigger prompts:** lowercase, terse, the way the user types, never naming the skill.
+  - Consumer-smoke fires the alphabetically first trigger case on `claude-opus-5-5` after every promote. Name the most typical prompt so it sorts first.
 - **2 or more near misses** (`nomatch-*`): the same topic or vocabulary, but a different job. One should be the nearest existing library skill's territory, if any.
 - **Output graders:** regexes for the elements only a skill-following answer contains. These are what the skill adds over plain Claude. Don't grade things plain Claude already gets right; they can't show a gain.
 - **Controls:**
@@ -50,16 +52,15 @@ Rename each case folder after what it tests.
 
 ```bash
 bin/gen-collision
-bin/check-skills --denylist .notes/denylist.txt
-claude plugin validate --strict plugins/<name>
+bin/precheck
 ```
 
-Fix everything they report. If `.notes/denylist.txt` is missing, say so; it's private and lives only on the user's machine.
+`bin/precheck` runs validate's free steps. Fix everything it reports. If it says `.notes/denylist.txt` is missing, tell the user; it's private and lives only in the user's main checkout.
 
 ## 5. Optional quick eval (ask first)
 
 ```bash
-claude plugin eval plugins/<name> --scaffold --runs 1 --ablation none --trust-plugin --no-publish
+claude plugin eval plugins/<name> --scaffold --model claude-sonnet-5-5 --runs 1 --ablation none --max-cost-usd 1 --trust-plugin --no-publish
 ```
 
 If the skill doesn't fire on a trigger prompt, tune the description, not the prompt. If plain Claude would pass every output grader anyway, the skill adds nothing. Say so, and propose dropping it.
@@ -77,5 +78,6 @@ If the skill doesn't fire on a trigger prompt, tune the description, not the pro
   - Add the CHANGELOG entry.
   - Update cases and controls if behavior changed, then repeat steps 4–6.
 - **Remove:**
-  - Delete `plugins/<name>/`, run `bin/gen-collision`, and open a pull request.
+  - Delete `plugins/<name>/`, its `.claude-plugin/marketplace.json` entry and its `README.md` row, run `bin/gen-collision` and `bin/precheck`, and open a pull request.
   - Remind the user to run `skills-sync remove <name>` in each project. `.notes/consumers.md` lists them.
+  - The `<name>--v<version>` release tags stay. docs/runbook.md says how to delete one.

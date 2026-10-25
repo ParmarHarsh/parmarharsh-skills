@@ -6,7 +6,11 @@
 Rules (docs/adding-a-skill.md explains each):
   layout       plugins/<s>/.claude-plugin/plugin.json names <s> and has a version;
                the plugin holds exactly one skill, skills/<s>/SKILL.md
+  listing      .claude-plugin/marketplace.json has one entry per plugin (source ./plugins/<s>)
+               and README.md's skills table one row per plugin; neither lists a missing plugin
   frontmatter  only the Agent Skills fields; name matches the folder
+  arguments    no "$<digit>" in a SKILL.md: Claude Code replaces $0, $1, ... with the skill's
+               arguments, so "$0.05" can render as "add.05"
   evals        >= 3 trigger cases (Skill grader for <s>, plus an output grader) and
                >= 2 near-miss cases named nomatch-* (Skill grader min 0, max 0, arm both)
   controls     every trigger case has controls/good.md and controls/bad.md; each regex
@@ -17,7 +21,8 @@ Rules (docs/adding-a-skill.md explains each):
   fixtures     every case's project/ folder is an exact copy of a folder in fixtures/
   collision    evals/ matches what bin/gen-collision would write
   private      no home paths, personal emails or key-like strings in tracked files;
-               with --denylist, none of the listed terms either
+               with --denylist, none of the listed terms either. A relative FILE that isn't
+               found here is looked up in the main checkout, as .notes/ isn't in worktrees
 """
 import argparse
 import filecmp
@@ -66,6 +71,9 @@ def check_skill_md(path, want_name):
     keys, _ = frontmatter(path)
     if keys is None:
         return fail(f"{rel(path)}: no frontmatter")
+    text = open(path, encoding="utf-8").read()
+    for m in re.finditer(r"\$\d", text):
+        fail(f"{rel(path)}:{text[: m.start()].count(chr(10)) + 1}: {m.group(0)!r} becomes a skill argument when the skill runs; write amounts as 'N cents', or use $ARGUMENTS[N]")
     extra = set(keys) - SPEC_FIELDS
     if extra:
         fail(f"{rel(path)}: fields outside the Agent Skills spec: {', '.join(sorted(extra))}")
@@ -177,6 +185,39 @@ def check_plugin(name, base):
                 fail(f"plugins/{name}/CHANGELOG.md: no '## {new_v}' entry")
 
 
+def check_listing(plugins):
+    mp = os.path.join(ROOT, ".claude-plugin", "marketplace.json")
+    entries = json.load(open(mp)).get("plugins", []) if os.path.isfile(mp) else []
+    for e in entries:
+        if e.get("source") != f"./plugins/{e.get('name')}":
+            fail(f".claude-plugin/marketplace.json: {e.get('name')}: source is {e.get('source')!r}, not './plugins/{e.get('name')}'")
+    compare(".claude-plugin/marketplace.json", "entry", [e.get("name") for e in entries], plugins)
+
+    lines = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read().splitlines()
+    head = next((i for i, line in enumerate(lines) if re.match(r"^\|\s*Skill\s*\|", line)), None)
+    if head is None:
+        return fail("README.md: no skills table (a '| Skill | What it does |' header)")
+    rows = []
+    for line in lines[head + 2 :]:
+        if not line.startswith("|"):
+            break
+        m = re.match(r"^\|\s*\[([^\]]+)\]\(([^)]+)\)", line)
+        if not m:
+            fail(f"README.md: skills table row doesn't start with a [name](link): {line[:40]}")
+            continue
+        rows.append(m.group(1))
+        if m.group(2) != f"plugins/{m.group(1)}/skills/{m.group(1)}/SKILL.md":
+            fail(f"README.md: row {m.group(1)} links to {m.group(2)}, not plugins/{m.group(1)}/skills/{m.group(1)}/SKILL.md")
+    compare("README.md skills table", "row", rows, plugins)
+
+
+def compare(where, what, listed, plugins):
+    for n in sorted(set(plugins) - set(listed)):
+        fail(f"{where}: no {what} for plugins/{n}")
+    for n in sorted(set(listed) - set(plugins)):
+        fail(f"{where}: {what} for {n}, but plugins/{n} doesn't exist")
+
+
 def check_budget(name):
     try:
         out = subprocess.run(
@@ -224,13 +265,22 @@ EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 EMAIL_OK = re.compile(r"(@example\.(com|org|net|invalid)$|\.example$|\.invalid$|^noreply@anthropic\.com$|@users\.noreply\.github\.com$)")
 
 
+def main_checkout():
+    """The main working tree, which worktrees share .git with but not its untracked .notes/."""
+    common = git("rev-parse", "--git-common-dir").strip()
+    return os.path.dirname(os.path.abspath(os.path.join(ROOT, common))) if common else ROOT
+
+
 def check_private(denylist):
     terms = []
     if denylist:
-        if not os.path.isfile(denylist):
-            fail(f"denylist {denylist} not found")
+        found = denylist
+        if not os.path.isabs(found) and not os.path.isfile(found):
+            found = os.path.join(main_checkout(), denylist)
+        if not os.path.isfile(found):
+            fail(f"denylist {denylist} not found here or in the main checkout")
         else:
-            terms = [t.strip().lower() for t in open(denylist, encoding="utf-8") if t.strip() and not t.startswith("#")]
+            terms = [t.strip().lower() for t in open(found, encoding="utf-8") if t.strip() and not t.startswith("#")]
     files = [f for f in git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0") if f]
     for f in files:
         path = os.path.join(ROOT, f)
@@ -263,6 +313,7 @@ def main():
         check_plugin(p, a.base)
         if not a.skip_budget:
             check_budget(p)
+    check_listing(plugins)
     for local in sorted(os.listdir(os.path.join(ROOT, ".claude", "skills"))) if os.path.isdir(os.path.join(ROOT, ".claude", "skills")) else []:
         check_skill_md(os.path.join(ROOT, ".claude", "skills", local, "SKILL.md"), local)
     check_fixtures()
