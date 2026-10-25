@@ -1,0 +1,8 @@
+{
+  "name": "deepen-prompt",
+  "version": "1.0.0",
+  "description": "Rewrite a prompt to ask for the deeper work a top professional in the field would do.",
+  "author": { "name": "Harsh Parmar", "url": "https://github.com/ParmarHarsh" },
+  "license": "MIT",
+  "repository": "https://github.com/ParmarHarsh/parmarharsh-skills"
+}
