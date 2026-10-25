@@ -9,12 +9,14 @@ A skill ships only when all of these hold. CI enforces each one (`bin/check-skil
 | Rule | Detail |
 |---|---|
 | One skill per plugin | `plugins/<name>/.claude-plugin/plugin.json` names `<name>` and has a `version`. The skill lives in `plugins/<name>/skills/<name>/SKILL.md`. Names are lowercase kebab-case |
+| Listed | `.claude-plugin/marketplace.json` has one `plugins` entry per plugin, with `source: ./plugins/<name>`, and the `README.md` skills table has one row per plugin. No entry or row for a plugin that no longer exists |
 | Spec-only frontmatter | `name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`, and nothing else, so the folder also works as a claude.ai upload |
 | Small always-on cost | Each session in every consumer carries the skill's listing. `claude plugin details` must report **≤ 200 tokens** always-on. Keep the description under about 500 characters, with the use case first |
 | Short body | Keep `SKILL.md` under about 150 lines. Templates and long checklists go in `references/` |
-| Nothing private | No names of real clients, projects or people, no hosts, home paths, emails, keys, or text pasted from other repos or transcripts. Invent every specific. CI scans for generic patterns. Run the local denylist check before pushing |
+| No `$` before a digit in `SKILL.md` | Claude Code replaces `$0`, `$1`, … with the skill's arguments, so "about $0.05" invoked as "add a skill …" renders as "about add.05". Write amounts as "5 cents" or "2 dollars". To use an argument on purpose, write `$ARGUMENTS[0]` |
+| Nothing private | No names of real clients, projects or people, no hosts, home paths, emails, keys, or text pasted from other repos or transcripts. Invent every specific. CI scans for generic patterns. Run the local denylist check before pushing (`bin/precheck` does) |
 | Approval-gated features | `allowed-tools`, hooks, scripts and `!` shell injection need explicit approval. CI lists any change to them in the run summary |
-| At least 3 trigger cases | Natural phrasing, the way the user would type it. Never name the skill. Each has a Skill grader for the skill, plus at least one output grader |
+| At least 3 trigger cases | Natural phrasing, the way the user would type it. Never name the skill. Each has a Skill grader for the skill, plus at least one output grader. The alphabetically first trigger case is the skill's canonical prompt: consumer-smoke checks it fires on `claude-opus-5-5` after every promote, so name the most typical prompt to sort first |
 | At least 2 near misses | `evals/nomatch-*`: the same topic or vocabulary, but a different job. Grader: `tool_used`, `tool: Skill`, `min: 0`, `max: 0`, `arm: both` |
 | Deterministic graders | Prefer `regex`, `tool_used` and `file_exists`. Use `llm` graders only for short outputs, with explicit PASS and FAIL conditions |
 | Grader controls | Each trigger case has `controls/good.md`, which every regex grader must pass, and `controls/bad.md`, which every regex grader must fail. This proves a grader can tell a good answer from a bad one |
@@ -24,23 +26,26 @@ A skill ships only when all of these hold. CI enforces each one (`bin/check-skil
 
 ## Steps
 
-1. **Draft.** Ask Claude in this repo to add the skill. It copies `templates/skill/` to `plugins/<name>/`, writes the skill and its cases, and runs:
+1. **Draft.** Ask Claude in this repo to add the skill. It copies `templates/skill/` to `plugins/<name>/`, writes the skill and its cases, adds the plugin's entry to `.claude-plugin/marketplace.json` and its row to the `README.md` skills table, and runs:
    ```bash
    bin/gen-collision
-   bin/check-skills --denylist .notes/denylist.txt
+   bin/precheck
    ```
-2. **Quick eval, optional.** This uses plan usage, about $0.05 per run, so Claude asks first:
+   `bin/precheck` runs validate's free steps locally: `claude plugin validate --strict`, `bin/check-skills --base origin/stable` with the denylist, the `skills-sync` behavior test, and `skills-ref` and `actionlint` when they are installed. The denylist is `.notes/denylist.txt` in the main checkout. It is private and gitignored, and `bin/check-skills --denylist .notes/denylist.txt` finds it from a worktree too.
+2. **Quick eval, optional.** This uses plan usage, about 5 cents per case ($0.18 for a five-case skill), so Claude asks first:
    ```bash
-   claude plugin eval plugins/<name> --scaffold --runs 1 --ablation none --trust-plugin --no-publish
+   claude plugin eval plugins/<name> --scaffold --model claude-sonnet-5-5 --runs 1 --ablation none --max-cost-usd 1 --trust-plugin --no-publish
    ```
 3. **Open a pull request** from a branch. `main` only accepts pull requests that pass **validate**. The **evals** workflow runs the new or changed skill's suite against the baseline, plus the collision suite. The other skills' suites don't run, although `evals/` changes. That costs about 30 to 40 cents per case of the skill's suite and 5 cents per collision case: about $3 for a new skill with five cases. A change under `fixtures/` or to `.github/claude-code-version` runs every skill's suite.
 4. **Merge** once both are green.
-5. **Promote.** Go to Actions → evals → Run workflow on `main` with **promote** checked. If a passing pull-request run tested byte-identical skills, cases, fixtures, CLI version and workflow, and has results for every skill changed since `stable` plus the collision suite, promote reuses them and spends nothing. Otherwise, for example when two pull requests merged since the last promote, it re-runs the evals for everything changed since `stable`. Then it fast-forwards `stable`, tags `<name>--v<version>`, and runs **consumer-smoke**. Consumer-smoke vendors every skill into a brand-new repo and checks each one fires.
+5. **Promote.** Go to Actions → evals → Run workflow on `main` with **promote** checked. If a passing pull-request run tested byte-identical skills, cases, fixtures, CLI version and workflow, and has results for every skill changed since `stable` plus the collision suite, promote reuses them and spends nothing. Otherwise, for example when two pull requests merged since the last promote, it re-runs the evals for everything changed since `stable`. Then it fast-forwards `stable`, tags `<name>--v<version>`, and runs **consumer-smoke**. Consumer-smoke vendors every skill into a brand-new repo and checks each one fires on its canonical prompt. Its job summary shows each run's cost.
 6. **Use it in a project:**
    ```bash
    ~/path/to/parmarharsh-skills/bin/skills-sync sync <name>
    git add .claude && git commit -m "skills: add <name>"
+   ~/path/to/parmarharsh-skills/bin/skills-sync check
    ```
+   Run `check` after the commit. Before it, `check` reports the fresh copy as `DRIFT … uncommitted changes`, which is expected.
 
 ## Changing or removing a skill
 
@@ -48,5 +53,6 @@ A skill ships only when all of these hold. CI enforces each one (`bin/check-skil
   - Edit the skill. Bump the version: patch for wording, minor for new behavior, major for removed behavior. Add the CHANGELOG entry, then follow steps 3–5.
   - Projects pick it up with `skills-sync sync`; `skills-sync status` shows which ones are behind.
 - **Remove:**
-  - Delete `plugins/<name>/`, run `bin/gen-collision`, open a pull request, and promote. Evals run the collision suite alone, about $1.
+  - Delete `plugins/<name>/`, its entry in `.claude-plugin/marketplace.json` and its row in the `README.md` skills table. Run `bin/gen-collision` and `bin/precheck`, open a pull request, and promote. Evals run the collision suite alone, about $1.
   - In each project, run `skills-sync remove <name>`. `skills-sync status` reports it as GONE until then.
+  - The skill's `<name>--v<version>` release tags stay, so a project can still pin one. To delete a tag, see [Delete a release tag](runbook.md#delete-a-release-tag).

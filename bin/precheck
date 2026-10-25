@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# precheck: run validate's free checks locally, before opening a pull request. Never calls a model.
+#
+#   bin/precheck
+#
+# Mirrors .github/workflows/validate.yml; keep the two in step. Runs claude plugin validate --strict,
+# skills-ref validate and actionlint (each only if installed), bin/check-skills against origin/stable
+# with the private denylist (.notes/denylist.txt in the main checkout), and the skills-sync behavior
+# test. Leaves out validate's CI token expiry check and its summary of sensitive changes.
+# Exit 1 if any check fails.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 2
+
+failed=()
+step() { # step <label> <command...>: run one check, note a failure, carry on
+  local label=$1; shift
+  echo "== $label"
+  "$@" || failed+=("$label")
+}
+installed() { command -v "$1" >/dev/null || { echo "== $1: skipped, not installed (validate runs it)"; return 1; }; }
+
+plugins_validate() {
+  claude plugin validate --strict . || return 1
+  for p in plugins/*/; do claude plugin validate --strict "$p" || return 1; done
+}
+skills_ref() {
+  for s in plugins/*/skills/*/ .claude/skills/*/; do
+    [ -d "$s" ] || continue
+    skills-ref validate "$s" || return 1
+  done
+}
+
+step "claude plugin validate --strict" plugins_validate
+if installed skills-ref; then step "skills-ref validate" skills_ref; fi
+
+# The version and CHANGELOG rule compares with what is released, as validate does.
+git fetch -q origin stable 2>/dev/null || echo "note: could not fetch origin/stable; comparing with the local copy"
+base=$(git rev-parse -q --verify origin/stable || git rev-parse -q --verify origin/main || true)
+step "bin/check-skills" bin/check-skills ${base:+--base "$base"} --denylist .notes/denylist.txt
+
+if installed actionlint; then step "actionlint" actionlint; fi
+
+tmp=$(mktemp -d)
+step "skills-sync behavior test" tests/skills-sync-test.sh "$tmp/skills-sync-test"
+rm -rf "$tmp"
+
+if [ ${#failed[@]} -gt 0 ]; then
+  echo "precheck: FAILED"
+  printf '  %s\n' "${failed[@]}"
+  exit 1
+fi
+echo "precheck: ok"
