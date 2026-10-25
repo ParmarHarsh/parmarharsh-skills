@@ -33,9 +33,9 @@ A skill ships only when all of these hold. CI enforces each one (`bin/check-skil
    ```bash
    claude plugin eval plugins/<name> --scaffold --runs 1 --ablation none --trust-plugin --no-publish
    ```
-3. **Open a pull request** from a branch. `main` only accepts pull requests that pass **validate**. The **evals** workflow runs the changed skill's suite against the baseline, plus the collision suite (about $1.50 to $2).
+3. **Open a pull request** from a branch. `main` only accepts pull requests that pass **validate**. The **evals** workflow runs the new or changed skill's suite against the baseline, plus the collision suite. The other skills' suites don't run, although `evals/` changes. That costs about 30 to 40 cents per case of the skill's suite and 5 cents per collision case: about $3 for a new skill with five cases. A change under `fixtures/` or to `.github/claude-code-version` runs every skill's suite.
 4. **Merge** once both are green.
-5. **Promote.** Go to Actions → evals → Run workflow on `main` with **promote** checked. It re-runs the evals for everything changed since `stable`, fast-forwards `stable`, tags `<name>--v<version>`, then runs **consumer-smoke**. Consumer-smoke vendors every skill into a brand-new repo and checks each one fires.
+5. **Promote.** Go to Actions → evals → Run workflow on `main` with **promote** checked. If a passing pull-request run tested byte-identical skills, cases, fixtures, CLI version and workflow, and has results for every skill changed since `stable` plus the collision suite, promote reuses them and spends nothing. Otherwise, for example when two pull requests merged since the last promote, it re-runs the evals for everything changed since `stable`. Then it fast-forwards `stable`, tags `<name>--v<version>`, and runs **consumer-smoke**. Consumer-smoke vendors every skill into a brand-new repo and checks each one fires.
 6. **Use it in a project:**
    ```bash
    ~/path/to/parmarharsh-skills/bin/skills-sync sync <name>
@@ -48,5 +48,5 @@ A skill ships only when all of these hold. CI enforces each one (`bin/check-skil
   - Edit the skill. Bump the version: patch for wording, minor for new behavior, major for removed behavior. Add the CHANGELOG entry, then follow steps 3–5.
   - Projects pick it up with `skills-sync sync`; `skills-sync status` shows which ones are behind.
 - **Remove:**
-  - Delete `plugins/<name>/`, run `bin/gen-collision`, open a pull request, and promote.
+  - Delete `plugins/<name>/`, run `bin/gen-collision`, open a pull request, and promote. Evals run the collision suite alone, about $1.
   - In each project, run `skills-sync remove <name>`. `skills-sync status` reports it as GONE until then.

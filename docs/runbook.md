@@ -5,12 +5,12 @@ Everything that ever needs doing, in one page. Day to day there is only one job:
 ## Release a skill change
 
 1. Open a pull request.
-2. CI runs **validate**, which is free, and **evals**, about $1.50 to $2 of plan usage.
+2. CI runs **validate**, which is free, and **evals**, which uses plan usage: the changed skills' suites plus the collision suite. Adding a five-case skill costs about $3, removing one about $1. [What CI checks](#what-ci-checks) has the cost per case.
 3. Merge.
 4. Go to Actions → **evals** → Run workflow on `main`, with **promote** checked.
 
 Promote:
-- re-runs evals for everything changed since `stable`;
+- reuses the pull request's eval results, spending nothing, when a passing pull-request run tested byte-identical files and covers every skill changed since `stable` plus the collision suite. Otherwise, for example when two pull requests merged since the last promote, it re-runs evals for everything changed since `stable`;
 - fast-forwards `stable`;
 - tags `<skill>--v<version>` for each new version;
 - runs **consumer-smoke**.
@@ -71,7 +71,7 @@ Dependabot opens one pull request a month bumping the pinned actions. Merge it o
 | Workflow | Checks | Cost |
 |---|---|---|
 | **validate** (every push and pull request) | Manifests, spec frontmatter, the rules in `bin/check-skills`, the `skills-sync` behavior test, token expiry, and a summary of changes to `allowed-tools`, hooks, scripts and `!` injection | Free |
-| **evals** (skill pull requests, or by hand) | Each changed skill against its no-plugin baseline: score ≥ 0.8 per case, mean Δ ≥ 0.3 on trigger cases; collision suite | Uses plan usage |
+| **evals** (skill pull requests, or by hand) | Each added or changed skill against its no-plugin baseline: score ≥ 0.8 per case, mean Δ ≥ 0.3 on trigger cases. Every skill when `fixtures/` or `.github/claude-code-version` changes. The collision suite whenever a skill or `evals/` changes, so removing a skill runs it alone | Plan usage: about 30 to 40 cents per suite case (three runs, with and without the skill), 5 cents per collision case (one run) |
 | **consumer-smoke** (after promote, or by hand) | A fresh project vendors every skill from `stable`; each skill is listed and fires on its canonical prompt on `claude-opus-5-5` | Small |
 
 Models: evals score on `claude-sonnet-5-5`; smoke checks triggering on `claude-opus-5-5`. In measurement over 5 runs, both models passed every case of both skills with similar margins over plain Claude, and Sonnet uses about half the usage.

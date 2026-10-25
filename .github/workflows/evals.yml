@@ -49,12 +49,17 @@ jobs:
     outputs:
       skills: ${{ steps.pick.outputs.skills }}
       matrix: ${{ steps.pick.outputs.matrix }}
+      collision: ${{ steps.pick.outputs.collision }}
       reused: ${{ steps.reuse.outputs.run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
+      # "changed" means the skills whose plugins/<skill> changed and still exist, or every skill
+      # when the shared fixture or the CLI version changed. Not evals/: adding or removing a skill
+      # rewrites every collision case, and only the collision suite reads them. That suite runs
+      # whenever a skill is evaluated or evals/ changed, so removing a skill runs it alone.
       - name: Pick skills to evaluate
         id: pick
         env:
@@ -68,21 +73,27 @@ jobs:
           if [ "$INPUT_SKILLS" = all ]; then skills=$all
           elif [ -n "$INPUT_SKILLS" ] && [ "$INPUT_SKILLS" != changed ]; then skills=$INPUT_SKILLS
           elif [ -z "$base" ]; then skills=$all
-          elif git diff --name-only "$base"...HEAD -- fixtures evals .github/claude-code-version | grep -q .; then skills=$all
-          else skills=$(git diff --name-only "$base"...HEAD -- plugins | cut -d/ -f2 | sort -u | tr '\n' ' ')
+          elif git diff --name-only "$base"...HEAD -- fixtures .github/claude-code-version | grep -q .; then skills=$all
+          else   # a removed skill has no suite left to run
+            skills=$(git diff --name-only "$base"...HEAD -- plugins | cut -d/ -f2 | sort -u | while read -r s; do [ ! -d "plugins/$s" ] || echo "$s"; done | tr '\n' ' ')
           fi
           read -r -a list <<< "$skills"   # one word per skill
           for s in "${list[@]}"; do [ -d "plugins/$s" ] || { echo "::error::no such skill: $s"; exit 1; }; done
-          echo "skills=${list[*]}" >> "$GITHUB_OUTPUT"
-          echo "matrix=$(printf '%s\n' "${list[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" >> "$GITHUB_OUTPUT"
-          echo "Evaluating: ${skills:-none} (base: ${base:-none})"
+          collision=false
+          if [ ${#list[@]} -gt 0 ] || { [ -n "$base" ] && git diff --name-only "$base"...HEAD -- evals | grep -q .; }; then collision=true; fi
+          {
+            echo "skills=${list[*]}"
+            echo "matrix=$(printf '%s\n' "${list[@]}" | jq -R . | jq -sc 'map(select(. != ""))')"
+            echo "collision=$collision"
+          } >> "$GITHUB_OUTPUT"
+          echo "Evaluating: ${list[*]:-none}; collision suite: $collision (base: ${base:-none})"
 
       # Promote would otherwise pay for the same evals twice. Reuse a passing pull-request run
       # when it tested byte-identical skills, cases, fixtures, CLI version and eval settings,
       # and its results include every skill this promote releases plus the collision suite.
       - name: Reuse a passing pull-request run of the same files
         id: reuse
-        if: github.event_name == 'workflow_dispatch' && inputs.promote && inputs.claude_code_version == '' && steps.pick.outputs.skills != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.promote && inputs.claude_code_version == '' && steps.pick.outputs.collision == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SKILLS: ${{ steps.pick.outputs.skills }}
@@ -97,11 +108,11 @@ jobs:
             ok=1; for s in $SKILLS collision; do [[ "$have" == *" eval-$s "* ]] || ok=0; done
             if [ $ok = 1 ]; then
               echo "run=$id" >> "$GITHUB_OUTPUT"
-              echo "Reusing pull-request evals run $id (head $sha): same files, covers: $SKILLS"
+              echo "Reusing pull-request evals run $id (head $sha): same files, covers: ${SKILLS:+$SKILLS }collision"
               exit 0
             fi
           done
-          echo "No passing pull-request run of these exact files covers $SKILLS; running the evals."
+          echo "No passing pull-request run of these exact files covers ${SKILLS:+$SKILLS }collision; running the evals."
 
   suite:
     needs: plan
@@ -170,7 +181,7 @@ jobs:
   collision:
     needs: [plan, suite]
     # after the suites, whatever they scored, so a re-run of this job alone is possible
-    if: always() && needs.plan.result == 'success' && needs.plan.outputs.skills != '' && needs.plan.outputs.reused == ''
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.collision == 'true' && needs.plan.outputs.reused == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -220,7 +231,7 @@ jobs:
 
   summary:
     needs: [plan, suite, collision]
-    if: always() && needs.plan.outputs.skills != ''
+    if: always() && needs.plan.outputs.collision == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
