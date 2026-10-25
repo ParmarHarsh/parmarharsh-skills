@@ -83,7 +83,8 @@ cmd_sync() {
   local tmp=$TMP
   git -C "$tmp" init -q
   git -C "$tmp" fetch -q --depth 1 "$lib" "$ref" || die "cannot fetch $ref from $lib"
-  local commit; commit=$(git -C "$tmp" rev-parse FETCH_HEAD)
+  # ^{commit}: a release tag is annotated, so FETCH_HEAD names the tag object, not its commit.
+  local commit; commit=$(git -C "$tmp" rev-parse 'FETCH_HEAD^{commit}')
 
   mkdir -p .claude/skills
   local lines; lines=$( [ -f "$LOCK" ] && awk '!/^#/ && NF' "$LOCK" || true )

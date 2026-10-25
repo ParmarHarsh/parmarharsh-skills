@@ -45,6 +45,10 @@ commit "hand edit"; "$SYNC" check >/dev/null; [ $? = 1 ] && pass "check fails on
 
 "$SYNC" sync --ref "$(git -C "$LIB" rev-parse stable~1)" alpha >/dev/null && commit pin
 [ "$(marker)" = 1.0.0 ] && [ "$(awk '$1=="beta"' .claude/skills.lock | wc -l | tr -d ' ')" = 1 ] && pass "pin one skill to an older commit; other lock lines kept" || fail pin
+g -C "$LIB" tag -a alpha--v1.0.0 -m "alpha 1.0.0" stable~1
+"$SYNC" sync --ref alpha--v1.0.0 alpha >/dev/null && commit "pin tag"
+got=$(awk '$1=="alpha" {print $3}' .claude/skills.lock)
+[ "$got" = "$(git -C "$LIB" rev-parse stable~1)" ] && "$SYNC" status >/dev/null && pass "a release-tag pin records the tagged commit" || fail "tag pin lock: $got"
 "$SYNC" remove beta >/dev/null && commit rm
 [ ! -e .claude/skills/beta ] && ! grep -q beta .claude/skills.lock && "$SYNC" check >/dev/null && pass "remove deletes folder and lock line" || fail remove
 "$SYNC" sync nope >/dev/null 2>&1; [ $? = 2 ] && pass "an unknown skill is an error" || fail unknown
