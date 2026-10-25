@@ -3,7 +3,7 @@ max_turns: 6
 timeout_seconds: 300
 allowed_tools: [Read, Glob, Grep, Skill]
 tags: [collision, trigger]
-plugins: ["../../plugins/dogfood-bug-report", "../../plugins/phase-brief", "../../plugins/release-readiness"]
+plugins: ["../../plugins/phase-brief", "../../plugins/release-readiness"]
 ---
 
 turn findings D-2 and D-4 from yesterday's audit into instructions for a fresh session to fix, it won't see this chat.

@@ -9,11 +9,6 @@
   },
   "plugins": [
     {
-      "name": "dogfood-bug-report",
-      "source": "./plugins/dogfood-bug-report",
-      "description": "Turn a rough bug description into a reproducible bug report."
-    },
-    {
       "name": "phase-brief",
       "source": "./plugins/phase-brief",
       "description": "Write the brief another session executes for one phase of work."

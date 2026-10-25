@@ -1,8 +1,0 @@
-{
-  "name": "dogfood-bug-report",
-  "version": "1.0.0",
-  "description": "Turn a rough bug description into a reproducible bug report.",
-  "author": { "name": "Harsh Parmar", "url": "https://github.com/ParmarHarsh" },
-  "license": "MIT",
-  "repository": "https://github.com/ParmarHarsh/parmarharsh-skills"
-}
