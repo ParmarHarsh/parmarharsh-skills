@@ -4,6 +4,7 @@ My Claude Code skills, kept in one place and tested before any project uses them
 
 | Skill | What it does |
 |---|---|
+| [dogfood-bug-report](plugins/dogfood-bug-report/skills/dogfood-bug-report/SKILL.md) | Turns a rough bug description into a reproducible bug report. |
 | [phase-brief](plugins/phase-brief/skills/phase-brief/SKILL.md) | Writes the brief that another session executes for one phase of work. |
 | [release-readiness](plugins/release-readiness/skills/release-readiness/SKILL.md) | Runs a go/no-go check before a build ships to an environment. |
 
