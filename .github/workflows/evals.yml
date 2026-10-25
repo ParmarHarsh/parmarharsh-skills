@@ -8,7 +8,9 @@ name: evals
 # limit; when a job dies on that limit, "Re-run failed jobs" redoes only that job.
 on:
   pull_request:
-    paths: ["plugins/**", "evals/**", "fixtures/**", ".github/workflows/evals.yml", ".github/claude-code-version"]
+    # Not evals.yml itself: workflow edits are linted by validate (actionlint), and a one-line
+    # workflow fix shouldn't spend a full eval run. Test such a change with a manual dispatch.
+    paths: ["plugins/**", "evals/**", "fixtures/**", ".github/claude-code-version"]
   workflow_dispatch:
     inputs:
       skills:
@@ -66,7 +68,7 @@ jobs:
           if [ "$INPUT_SKILLS" = all ]; then skills=$all
           elif [ -n "$INPUT_SKILLS" ] && [ "$INPUT_SKILLS" != changed ]; then skills=$INPUT_SKILLS
           elif [ -z "$base" ]; then skills=$all
-          elif git diff --name-only "$base"...HEAD -- fixtures evals .github/workflows/evals.yml .github/claude-code-version | grep -q .; then skills=$all
+          elif git diff --name-only "$base"...HEAD -- fixtures evals .github/claude-code-version | grep -q .; then skills=$all
           else skills=$(git diff --name-only "$base"...HEAD -- plugins | cut -d/ -f2 | sort -u | tr '\n' ' ')
           fi
           read -r -a list <<< "$skills"   # one word per skill
@@ -304,6 +306,8 @@ jobs:
 
   smoke:
     needs: promote
+    # explicit: by default a job is skipped when anything upstream was skipped (e.g. reused evals)
+    if: always() && needs.promote.result == 'success'
     uses: ./.github/workflows/smoke.yml
     with:
       ref: stable
